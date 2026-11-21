@@ -123,13 +123,13 @@ jobs:
 
       - name: Read package.json
         id: meta
-        uses: KMM-ZONE/open-flows/actions/read-npm-package@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/read-npm-package@v1.0.1
         with:
           directory: ${{ inputs.package_path }}
           fail-if-private: "false"
 
       - name: Verify tag matches package version
-        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.1
         with:
           version: ${{ steps.meta.outputs.version }}
           tag-prefix: ${{ inputs.tag_prefix }}
@@ -137,7 +137,7 @@ jobs:
 
       - name: Check npm credentials
         if: ${{ inputs.publish_npm }}
-        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.1
         with:
           enabled: ${{ !inputs.dry_run }}
           secrets: |
@@ -145,7 +145,7 @@ jobs:
 
       - name: Check NuGet credentials
         if: ${{ inputs.publish_nuget }}
-        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.1
         with:
           enabled: ${{ !inputs.dry_run }}
           secrets: |
@@ -196,7 +196,7 @@ jobs:
       - name: Check whether this version is already on npm
         id: npm_exists
         if: ${{ inputs.publish_npm && !inputs.dry_run }}
-        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.0.1
         with:
           registry: npm
           name: ${{ steps.meta.outputs.name }}
@@ -242,7 +242,7 @@ jobs:
       - name: Create GitHub Release
         id: release
         if: ${{ !inputs.dry_run && inputs.github_release && github.ref_type == 'tag' }}
-        uses: KMM-ZONE/open-flows/actions/github-release@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/github-release@v1.0.1
         with:
           tag: ${{ github.ref_name }}
           version: ${{ steps.meta.outputs.version }}
@@ -266,6 +266,6 @@ jobs:
       - name: Set result
         id: result
         if: ${{ always() }}
-        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.1
         with:
           outcomes: ${{ steps.npm.outcome }} ${{ steps.nuget.outcome }} ${{ steps.release.outcome }}

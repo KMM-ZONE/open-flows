@@ -168,7 +168,7 @@ jobs:
       - name: Notify Packagist
         id: publish
         if: ${{ !inputs.dry_run }}
-        uses: KMM-ZONE/open-flows/actions/packagist-notify@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/packagist-notify@v1.0.1
         with:
           username: ${{ secrets.PACKAGIST_USERNAME }}
           token: ${{ secrets.PACKAGIST_API_TOKEN }}
@@ -177,6 +177,6 @@ jobs:
       - name: Set result
         id: result
         if: ${{ always() }}
-        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.1
         with:
           outcomes: ${{ steps.publish.outputs.notified == 'true' && 'success' || 'skipped' }}

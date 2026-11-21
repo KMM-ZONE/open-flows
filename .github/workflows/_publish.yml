@@ -1,11 +1,13 @@
 # Release pipeline of THIS repository (underscore = internal, not meant to be called by other repositories).
 #
-#   push to main  ->  check-version  ->  verify-sync + lint  ->  create-release
+#   push to main  ->  lint (always)  +  check-version  ->  verify-sync  ->  create-release
+#
+# One push = one workflow run: lint, the version check and the release are jobs of this workflow.
 #
 # The release is driven by the plain VERSION file in the repository root:
 #   * VERSION higher than the latest tag  -> verify every version reference is in sync (scripts/update-version.sh --check),
-#                                            lint, then create tag vX.Y.Z + GitHub Release + move the vX alias
-#   * VERSION unchanged / lower           -> nothing is tagged or released
+#                                            and once lint passed create tag vX.Y.Z + GitHub Release + move the vX alias
+#   * VERSION unchanged / lower           -> lint still runs, but nothing is tagged or released
 name: _publish
 
 on:
@@ -26,6 +28,10 @@ permissions:
   contents: read
 
 jobs:
+  lint:
+    name: Lint
+    uses: ./.github/workflows/lint.yml
+
   check-version:
     name: Check version
     uses: ./.github/workflows/check-version.yml
@@ -47,12 +53,6 @@ jobs:
       # VERSION, the pinned action references in the workflows and the README aliases must all agree
       - name: Verify that every version reference matches VERSION
         run: bash scripts/update-version.sh --check
-
-  lint:
-    name: Lint before releasing
-    needs: check-version
-    if: ${{ needs.check-version.outputs.bumped == 'true' }}
-    uses: ./.github/workflows/lint.yml
 
   create-release:
     name: Create release

@@ -1,12 +1,13 @@
-# Quality gate for this repository. Runs on every change and is also called by _publish.yml before a release.
+# Quality gate for this repository.
+#   * pull requests  -> runs on its own
+#   * push to main   -> runs as the first job of _publish.yml (so one push = one workflow run)
+#   * manual         -> "Run workflow"
 name: Lint
 
 on:
   workflow_call:
+  workflow_dispatch:
   pull_request:
-    paths: [".github/**", "actions/**", "scripts/**", "VERSION", "README.md", ".yamllint.yml", ".markdownlint.jsonc"]
-  push:
-    branches: [main]
     paths: [".github/**", "actions/**", "scripts/**", "VERSION", "README.md", ".yamllint.yml", ".markdownlint.jsonc"]
 
 permissions:

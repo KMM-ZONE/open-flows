@@ -85,7 +85,7 @@ jobs:
           persist-credentials: false
 
       - name: Check credentials
-        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.1
         with:
           enabled: ${{ !inputs.dry_run }}
           secrets: |
@@ -126,7 +126,7 @@ jobs:
           echo "📦 $SLUG $VERSION"
 
       - name: Verify tag matches plugin version
-        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.1
         with:
           version: ${{ steps.meta.outputs.version }}
           tag-prefix: ${{ inputs.tag_prefix }}
@@ -135,7 +135,7 @@ jobs:
       - name: Check whether this version is already tagged on WordPress.org
         id: exists
         if: ${{ inputs.skip_if_published }}
-        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.0.1
         with:
           registry: wordpress
           name: ${{ steps.meta.outputs.slug }}
@@ -186,6 +186,6 @@ jobs:
       - name: Set result
         id: result
         if: ${{ always() }}
-        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.1
         with:
           outcomes: ${{ inputs.dry_run && 'skipped' || steps.deploy.outcome }}

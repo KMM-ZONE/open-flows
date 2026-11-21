@@ -106,7 +106,7 @@ jobs:
           gpg-passphrase: MAVEN_GPG_PASSPHRASE
 
       - name: Check credentials
-        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.1
         with:
           enabled: ${{ !inputs.dry_run }}
           secrets: |
@@ -130,7 +130,7 @@ jobs:
           echo "📦 $GROUP:$ARTIFACT:$VERSION"
 
       - name: Verify tag matches project version
-        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.1
         with:
           version: ${{ steps.meta.outputs.version }}
           tag-prefix: ${{ inputs.tag_prefix }}
@@ -148,7 +148,7 @@ jobs:
       - name: Check whether this version is already on Maven Central
         id: exists
         if: ${{ inputs.skip_if_published }}
-        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.0.1
         with:
           registry: maven-central
           name: ${{ steps.meta.outputs.artifact }}
@@ -182,6 +182,6 @@ jobs:
       - name: Set result
         id: result
         if: ${{ always() }}
-        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.1
         with:
           outcomes: ${{ steps.publish.outcome }}

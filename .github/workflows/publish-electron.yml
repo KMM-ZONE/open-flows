@@ -138,14 +138,14 @@ jobs:
 
       - name: Read package metadata
         id: meta
-        uses: KMM-ZONE/open-flows/actions/read-npm-package@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/read-npm-package@v1.0.1
         with:
           directory: ${{ inputs.working_directory }}
           dist-tag: ${{ inputs.dist_tag }}
           fail-if-private: ${{ inputs.publish_npm }}
 
       - name: Verify tag matches package version
-        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.1
         with:
           version: ${{ steps.meta.outputs.version }}
           tag-prefix: ${{ inputs.tag_prefix }}
@@ -172,7 +172,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: KMM-ZONE/open-flows/actions/setup-node-project@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/setup-node-project@v1.0.1
         with:
           node-version: ${{ inputs.node_version }}
           package-manager: ${{ inputs.package_manager }}
@@ -181,7 +181,7 @@ jobs:
           install-directory: ${{ inputs.install_directory }}
 
       - name: Check credentials
-        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.1
         with:
           enabled: ${{ !inputs.dry_run }}
           secrets: |
@@ -190,7 +190,7 @@ jobs:
       - name: Check whether this version is already published
         id: exists
         if: ${{ inputs.skip_if_published }}
-        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.0.1
         with:
           registry: npm
           name: ${{ needs.meta.outputs.name }}
@@ -200,7 +200,7 @@ jobs:
 
       - name: Install dependencies
         if: ${{ steps.exists.outputs.exists != 'true' }}
-        uses: KMM-ZONE/open-flows/actions/install-node-deps@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/install-node-deps@v1.0.1
         with:
           package-manager: ${{ inputs.package_manager }}
           directory: ${{ inputs.install_directory }}
@@ -240,7 +240,7 @@ jobs:
       - name: Set result
         id: result
         if: ${{ always() }}
-        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.1
         with:
           outcomes: ${{ steps.publish.outcome }}
 
@@ -266,14 +266,14 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: KMM-ZONE/open-flows/actions/setup-node-project@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/setup-node-project@v1.0.1
         with:
           node-version: ${{ inputs.node_version }}
           package-manager: ${{ inputs.package_manager }}
           cache: 'false'
 
       - name: Install dependencies
-        uses: KMM-ZONE/open-flows/actions/install-node-deps@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/install-node-deps@v1.0.1
         with:
           package-manager: ${{ inputs.package_manager }}
           directory: ${{ inputs.install_directory }}
@@ -323,7 +323,7 @@ jobs:
 
       - name: Attach installers to the GitHub Release
         if: ${{ !inputs.dry_run && github.ref_type == 'tag' }}
-        uses: KMM-ZONE/open-flows/actions/github-release@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/github-release@v1.0.1
         with:
           tag: ${{ github.ref_name }}
           version: ${{ needs.meta.outputs.version }}

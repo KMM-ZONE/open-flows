@@ -166,7 +166,7 @@ jobs:
       - name: Create GitHub Release
         id: release
         if: ${{ !inputs.dry_run && inputs.github_release }}
-        uses: KMM-ZONE/open-flows/actions/github-release@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/github-release@v1.0.1
         with:
           tag: ${{ steps.meta.outputs.tag }}
           version: ${{ steps.meta.outputs.version }}
@@ -174,6 +174,6 @@ jobs:
       - name: Set result
         id: result
         if: ${{ always() }}
-        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.1
         with:
           outcomes: ${{ steps.warm.outcome }} ${{ steps.release.outcome }}
