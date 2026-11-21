@@ -1,0 +1,177 @@
+# Test and publish a Rust crate to crates.io.
+# Auth: CARGO_REGISTRY_TOKEN secret (crates.io API token with the publish-new / publish-update scope).
+name: Publish Rust Crate (crates.io)
+
+on:
+  workflow_call:
+    inputs:
+      toolchain:
+        description: "Rust toolchain (stable, beta, nightly, 1.85, ...)"
+        type: string
+        default: "stable"
+      working_directory:
+        description: "Directory containing Cargo.toml (workspace root for workspaces)"
+        type: string
+        default: "."
+      package:
+        description: "Crate to publish from a workspace (cargo -p). Empty = the only/first package"
+        type: string
+        default: ""
+      run_tests:
+        description: "Run `cargo test`"
+        type: boolean
+        default: true
+      test_args:
+        description: "Extra arguments for `cargo test`, e.g. --all-features"
+        type: string
+        default: ""
+      run_clippy:
+        description: "Run `cargo clippy -- -D warnings`"
+        type: boolean
+        default: false
+      allow_dirty:
+        description: "Pass --allow-dirty to cargo publish (needed when Cargo.lock is generated and not committed)"
+        type: boolean
+        default: false
+      verify_tag:
+        description: "On tag pushes, fail unless the tag equals tag_prefix + the crate version"
+        type: boolean
+        default: true
+      tag_prefix:
+        description: "Tag prefix used when verifying the tag"
+        type: string
+        default: "v"
+      skip_if_published:
+        description: "Exit successfully when this version already exists on crates.io"
+        type: boolean
+        default: true
+      dry_run:
+        description: "Run `cargo publish --dry-run` instead of publishing"
+        type: boolean
+        default: false
+    secrets:
+      CARGO_REGISTRY_TOKEN:
+        description: "crates.io API token"
+        required: false
+    outputs:
+      version:
+        description: "Crate version read from Cargo.toml"
+        value: ${{ jobs.publish.outputs.version }}
+      published:
+        description: "'true' when this run published the crate"
+        value: ${{ jobs.publish.outputs.published }}
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      published: ${{ steps.result.outputs.published }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        env:
+          TOOLCHAIN: ${{ inputs.toolchain }}
+          CLIPPY: ${{ inputs.run_clippy }}
+        run: |
+          COMPONENTS=()
+          if [ "$CLIPPY" = "true" ]; then COMPONENTS+=(--component clippy); fi
+          rustup toolchain install "$TOOLCHAIN" --profile minimal --no-self-update "${COMPONENTS[@]}"
+          rustup default "$TOOLCHAIN"
+          rustc --version
+          cargo --version
+
+      - name: Check credentials
+        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.0
+        with:
+          enabled: ${{ !inputs.dry_run }}
+          secrets: |
+            CARGO_REGISTRY_TOKEN=${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Read crate metadata
+        id: meta
+        env:
+          PACKAGE: ${{ inputs.package }}
+        run: |
+          read -r NAME VERSION < <(cargo metadata --no-deps --format-version 1 \
+            | jq -r --arg p "$PACKAGE" '[.packages[] | select($p == "" or .name == $p)] | .[0] | "\(.name) \(.version)"')
+          if [ -z "$NAME" ] || [ "$NAME" = "null" ]; then
+            echo "::error::Could not find the crate '${PACKAGE:-<first package>}' in Cargo metadata"
+            exit 1
+          fi
+          {
+            echo "name=$NAME"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
+          echo "📦 $NAME $VERSION"
+
+      - name: Verify tag matches crate version
+        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.0
+        with:
+          version: ${{ steps.meta.outputs.version }}
+          tag-prefix: ${{ inputs.tag_prefix }}
+          enabled: ${{ inputs.verify_tag }}
+
+      - name: Check whether this version is already on crates.io
+        id: exists
+        if: ${{ inputs.skip_if_published }}
+        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.0.0
+        with:
+          registry: crates
+          name: ${{ steps.meta.outputs.name }}
+          version: ${{ steps.meta.outputs.version }}
+
+      - name: Clippy
+        if: ${{ inputs.run_clippy && steps.exists.outputs.exists != 'true' }}
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        if: ${{ inputs.run_tests && steps.exists.outputs.exists != 'true' }}
+        env:
+          TEST_ARGS: ${{ inputs.test_args }}
+        run: |
+          read -ra EXTRA <<< "$TEST_ARGS"
+          cargo test "${EXTRA[@]}"
+
+      - name: Publish (dry run)
+        if: ${{ inputs.dry_run && steps.exists.outputs.exists != 'true' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          ALLOW_DIRTY: ${{ inputs.allow_dirty }}
+        run: |
+          ARGS=(--dry-run)
+          if [ -n "$PACKAGE" ]; then ARGS+=(-p "$PACKAGE"); fi
+          if [ "$ALLOW_DIRTY" = "true" ]; then ARGS+=(--allow-dirty); fi
+          cargo publish "${ARGS[@]}"
+
+      - name: Publish
+        id: publish
+        if: ${{ !inputs.dry_run && steps.exists.outputs.exists != 'true' }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          PACKAGE: ${{ inputs.package }}
+          ALLOW_DIRTY: ${{ inputs.allow_dirty }}
+        run: |
+          ARGS=()
+          if [ -n "$PACKAGE" ]; then ARGS+=(-p "$PACKAGE"); fi
+          if [ "$ALLOW_DIRTY" = "true" ]; then ARGS+=(--allow-dirty); fi
+          cargo publish "${ARGS[@]}"
+
+      - name: Set result
+        id: result
+        if: ${{ always() }}
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        with:
+          outcomes: ${{ steps.publish.outcome }}

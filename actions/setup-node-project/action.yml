@@ -1,0 +1,44 @@
+name: Set up Node.js project
+description: Enables corepack for yarn/pnpm, installs Node.js with optional dependency caching and registry auth.
+author: KMM-ZONE
+
+inputs:
+  node-version:
+    description: "Node.js version"
+    required: false
+    default: "24"
+  package-manager:
+    description: "npm | yarn | pnpm"
+    required: false
+    default: "npm"
+  registry-url:
+    description: "npm registry URL (enables NODE_AUTH_TOKEN based auth). Empty = leave the registry alone"
+    required: false
+    default: ""
+  cache:
+    description: "Cache the package-manager store ('true' needs a lock file)"
+    required: false
+    default: "true"
+  install-directory:
+    description: "Folder that holds the lock file"
+    required: false
+    default: "."
+
+runs:
+  using: composite
+  steps:
+    - name: Enable corepack (yarn / pnpm)
+      if: ${{ inputs.package-manager != 'npm' }}
+      shell: bash
+      run: corepack enable
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v7
+      with:
+        node-version: ${{ inputs.node-version }}
+        registry-url: ${{ inputs.registry-url }}
+        cache: ${{ inputs.cache == 'true' && inputs.package-manager || '' }}
+        cache-dependency-path: |
+          ${{ inputs.install-directory }}/package-lock.json
+          ${{ inputs.install-directory }}/yarn.lock
+          ${{ inputs.install-directory }}/pnpm-lock.yaml

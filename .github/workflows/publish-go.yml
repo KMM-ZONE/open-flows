@@ -1,0 +1,179 @@
+# Release a Go module. Go modules are published by pushing a semver tag - there is no upload and no secret.
+# This workflow validates the tag and module path, runs vet + tests, asks proxy.golang.org to cache the
+# new version (so pkg.go.dev and `go get` see it immediately) and can create the GitHub Release.
+name: Publish Go Module
+
+on:
+  workflow_call:
+    inputs:
+      go_version:
+        description: "Go version (empty = the version in go.mod)"
+        type: string
+        default: ""
+      working_directory:
+        description: "Directory containing go.mod"
+        type: string
+        default: "."
+      tag:
+        description: "Existing tag to release (for workflow_dispatch). Empty = the tag that triggered the run"
+        type: string
+        default: ""
+      tag_prefix:
+        description: "Text before the 'v' in the tag. Empty for v1.2.3; 'sub/dir/' for sub-module tags like sub/dir/v1.2.3"
+        type: string
+        default: ""
+      run_vet:
+        description: "Run `go vet`"
+        type: boolean
+        default: true
+      run_tests:
+        description: "Run `go test`"
+        type: boolean
+        default: true
+      test_args:
+        description: "Arguments for `go test`"
+        type: string
+        default: "./..."
+      warm_proxy:
+        description: "Request the new version from proxy.golang.org so it is indexed right away"
+        type: boolean
+        default: true
+      github_release:
+        description: "Create a GitHub Release with generated notes (skipped when it already exists)"
+        type: boolean
+        default: true
+      dry_run:
+        description: "Validate, vet and test only"
+        type: boolean
+        default: false
+    outputs:
+      version:
+        description: "Semantic version of the release (without the leading v)"
+        value: ${{ jobs.publish.outputs.version }}
+      published:
+        description: "'true' when the proxy was warmed or the release created"
+        value: ${{ jobs.publish.outputs.published }}
+
+jobs:
+  publish:
+    name: Release Go module
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write  # create the GitHub Release
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      published: ${{ steps.result.outputs.published }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go (version from go.mod)
+        if: ${{ inputs.go_version == '' }}
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: ${{ inputs.working_directory }}/go.mod
+
+      - name: Set up Go (explicit version)
+        if: ${{ inputs.go_version != '' }}
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ inputs.go_version }}
+
+      - name: Validate tag and module path
+        id: meta
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          TAG_PREFIX: ${{ inputs.tag_prefix }}
+        run: |
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ]; then
+            if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+              echo "::error::Go modules are released by tag. Run this workflow on a tag push, or pass the 'tag' input."
+              exit 1
+            fi
+            TAG="$GITHUB_REF_NAME"
+          fi
+          case "$TAG" in
+            "${TAG_PREFIX}"v*) ;;
+            *) echo "::error::Tag '$TAG' must look like '${TAG_PREFIX}v1.2.3'"; exit 1 ;;
+          esac
+          VERSION="${TAG#"$TAG_PREFIX"}"
+          SEMVER_RE='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+          if ! [[ "$VERSION" =~ $SEMVER_RE ]]; then
+            echo "::error::'$VERSION' is not a valid semantic version (expected vMAJOR.MINOR.PATCH[-prerelease])"
+            exit 1
+          fi
+          MAJOR="${VERSION#v}"
+          MAJOR="${MAJOR%%.*}"
+          MODULE=$(go list -m)
+          if [ "$MAJOR" -ge 2 ]; then
+            case "$MODULE" in
+              */v"$MAJOR" | gopkg.in/*) ;;
+              *) echo "::error::Module path '$MODULE' must end in /v$MAJOR for major version $MAJOR (see go.dev/ref/mod#major-version-suffixes)"; exit 1 ;;
+            esac
+          fi
+          {
+            echo "tag=$TAG"
+            echo "module=$MODULE"
+            echo "go_version=$VERSION"
+            echo "version=${VERSION#v}"
+          } >> "$GITHUB_OUTPUT"
+          echo "📦 $MODULE $VERSION"
+
+      - name: Vet
+        if: ${{ inputs.run_vet }}
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        if: ${{ inputs.run_tests }}
+        env:
+          TEST_ARGS: ${{ inputs.test_args }}
+        run: |
+          read -ra EXTRA <<< "$TEST_ARGS"
+          go test "${EXTRA[@]}"
+
+      - name: Ask proxy.golang.org to index the version
+        id: warm
+        if: ${{ !inputs.dry_run && inputs.warm_proxy }}
+        env:
+          MODULE: ${{ steps.meta.outputs.module }}
+          GO_VERSION: ${{ steps.meta.outputs.go_version }}
+        run: |
+          cd "$(mktemp -d)" || exit 1
+          for ATTEMPT in 1 2 3 4 5; do
+            if GOPROXY=https://proxy.golang.org GOFLAGS="" go list -m "${MODULE}@${GO_VERSION}"; then
+              echo "✅ proxy.golang.org knows ${MODULE}@${GO_VERSION}"
+              exit 0
+            fi
+            echo "…not available yet (attempt $ATTEMPT/5), retrying"
+            sleep $((ATTEMPT * 10))
+          done
+          echo "::error::proxy.golang.org could not fetch ${MODULE}@${GO_VERSION}. Is the repository public?"
+          exit 1
+
+      - name: Create GitHub Release
+        id: release
+        if: ${{ !inputs.dry_run && inputs.github_release }}
+        uses: KMM-ZONE/open-flows/actions/github-release@v1.0.0
+        with:
+          tag: ${{ steps.meta.outputs.tag }}
+          version: ${{ steps.meta.outputs.version }}
+
+      - name: Set result
+        id: result
+        if: ${{ always() }}
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        with:
+          outcomes: ${{ steps.warm.outcome }} ${{ steps.release.outcome }}

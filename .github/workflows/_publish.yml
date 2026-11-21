@@ -1,0 +1,90 @@
+# Release pipeline of THIS repository (underscore = internal, not meant to be called by other repositories).
+#
+#   push to main  ->  check-version  ->  verify-sync + lint  ->  create-release
+#
+# The release is driven by the plain VERSION file in the repository root:
+#   * VERSION higher than the latest tag  -> verify every version reference is in sync (scripts/update-version.sh --check),
+#                                            lint, then create tag vX.Y.Z + GitHub Release + move the vX alias
+#   * VERSION unchanged / lower           -> nothing is tagged or released
+name: _publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Show what would be released without creating the tag / release"
+        type: boolean
+        default: false
+
+concurrency:
+  group: _publish
+  cancel-in-progress: false  # never cancel a release half-way
+
+permissions:
+  contents: read
+
+jobs:
+  check-version:
+    name: Check version
+    uses: ./.github/workflows/check-version.yml
+    with:
+      version_file: VERSION
+
+  verify-sync:
+    name: Versions in sync?
+    needs: check-version
+    if: ${{ needs.check-version.outputs.bumped == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # VERSION, the pinned action references in the workflows and the README aliases must all agree
+      - name: Verify that every version reference matches VERSION
+        run: bash scripts/update-version.sh --check
+
+  lint:
+    name: Lint before releasing
+    needs: check-version
+    if: ${{ needs.check-version.outputs.bumped == 'true' }}
+    uses: ./.github/workflows/lint.yml
+
+  create-release:
+    name: Create release
+    needs: [check-version, verify-sync, lint]
+    # releases come from main only; a manual run on another branch may only be a dry run
+    if: ${{ needs.check-version.outputs.bumped == 'true' && (github.ref == 'refs/heads/main' || inputs.dry_run) }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/create-release.yml
+    with:
+      version: ${{ needs.check-version.outputs.version }}
+      version_file: VERSION
+      sha: ${{ github.sha }}
+      dry_run: ${{ inputs.dry_run || false }}
+
+  not-released:
+    name: Nothing to release
+    needs: check-version
+    if: ${{ needs.check-version.outputs.bumped != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Explain
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+          LATEST: ${{ needs.check-version.outputs.latest_version }}
+          REASON: ${{ needs.check-version.outputs.reason }}
+        run: |
+          {
+            echo "### No release"
+            echo ""
+            echo "VERSION is \`$VERSION\` and the latest tag is \`${LATEST:-none}\` ($REASON)."
+            echo "Raise the number in the \`VERSION\` file to publish a new release."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "No version bump ($REASON) - no tag and no release created."

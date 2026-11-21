@@ -1,0 +1,160 @@
+# Build and publish a Python package to PyPI (or TestPyPI / a private index).
+# Auth: PYPI_API_TOKEN secret (a project- or account-scoped PyPI API token).
+# PyPI "trusted publishing" (OIDC) cannot be used from a reusable workflow (see docs.pypi.org
+# trusted-publishers/troubleshooting), so a token is required here.
+# Name and version are read from the built distribution, so dynamic versions
+# (setuptools_scm, hatch-vcs, poetry-dynamic-versioning ...) work too.
+name: Publish Python Package (PyPI)
+
+on:
+  workflow_call:
+    inputs:
+      python_version:
+        description: "Python version"
+        type: string
+        default: "3.13"
+      working_directory:
+        description: "Directory containing pyproject.toml / setup.py"
+        type: string
+        default: "."
+      install_command:
+        description: "Installs the project plus its test dependencies (used only when run_tests is true)"
+        type: string
+        default: 'python -m pip install -e ".[test]"'
+      run_tests:
+        description: "Run the test command before building"
+        type: boolean
+        default: true
+      test_command:
+        description: "Test command"
+        type: string
+        default: "pytest"
+      repository_url:
+        description: "Upload URL (use https://test.pypi.org/legacy/ for TestPyPI)"
+        type: string
+        default: "https://upload.pypi.org/legacy/"
+      verify_tag:
+        description: "On tag pushes, fail unless the tag equals tag_prefix + the built version"
+        type: boolean
+        default: true
+      tag_prefix:
+        description: "Tag prefix used when verifying the tag"
+        type: string
+        default: "v"
+      skip_if_published:
+        description: "Exit successfully when this version already exists on PyPI/TestPyPI"
+        type: boolean
+        default: true
+      dry_run:
+        description: "Build and run `twine check`, but do not upload"
+        type: boolean
+        default: false
+    secrets:
+      PYPI_API_TOKEN:
+        description: "PyPI (or TestPyPI) API token"
+        required: false
+    outputs:
+      version:
+        description: "Version of the built distribution"
+        value: ${{ jobs.publish.outputs.version }}
+      published:
+        description: "'true' when this run uploaded the package"
+        value: ${{ jobs.publish.outputs.published }}
+
+jobs:
+  publish:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      published: ${{ steps.result.outputs.published }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # tags are needed by setuptools_scm / hatch-vcs
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Check credentials
+        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.0
+        with:
+          enabled: ${{ !inputs.dry_run }}
+          secrets: |
+            PYPI_API_TOKEN=${{ secrets.PYPI_API_TOKEN }}
+
+      - name: Install build tools
+        run: python -m pip install --upgrade pip build twine
+
+      - name: Install project and test dependencies
+        if: ${{ inputs.run_tests }}
+        env:
+          INSTALL_COMMAND: ${{ inputs.install_command }}
+        run: bash -c "$INSTALL_COMMAND"
+
+      - name: Test
+        if: ${{ inputs.run_tests }}
+        env:
+          TEST_COMMAND: ${{ inputs.test_command }}
+        run: bash -c "$TEST_COMMAND"
+
+      - name: Build distributions
+        run: |
+          rm -rf dist build
+          python -m build
+          ls -1 dist
+
+      - name: Read name and version from the build
+        id: meta
+        uses: KMM-ZONE/open-flows/actions/read-python-dist@v1.0.0
+        with:
+          directory: ${{ inputs.working_directory }}
+
+      - name: Check distributions
+        run: twine check dist/*
+
+      - name: Verify tag matches built version
+        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.0
+        with:
+          version: ${{ steps.meta.outputs.version }}
+          tag-prefix: ${{ inputs.tag_prefix }}
+          enabled: ${{ inputs.verify_tag }}
+
+      - name: Check whether this version is already on the index
+        id: exists
+        if: ${{ inputs.skip_if_published && contains(inputs.repository_url, 'pypi.org') }}
+        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.0.0
+        with:
+          registry: pypi
+          name: ${{ steps.meta.outputs.name }}
+          version: ${{ steps.meta.outputs.version }}
+          registry-url: ${{ contains(inputs.repository_url, 'test.pypi.org') && 'https://test.pypi.org' || 'https://pypi.org' }}
+
+      - name: Publish
+        id: publish
+        if: ${{ !inputs.dry_run && steps.exists.outputs.exists != 'true' }}
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # v1.14.3
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          repository-url: ${{ inputs.repository_url }}
+          packages-dir: ${{ inputs.working_directory }}/dist/
+          attestations: false
+
+      - name: Set result
+        id: result
+        if: ${{ always() }}
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        with:
+          outcomes: ${{ steps.publish.outcome }}

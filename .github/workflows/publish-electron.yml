@@ -1,0 +1,330 @@
+# Publish an Electron project: the npm package and/or signed desktop installers.
+#  - npm package  -> NPM_TOKEN
+#  - installers   -> electron-builder on macOS / Windows / Linux, attached to the GitHub Release of the tag
+# Code-signing secrets are optional; without them the installers are built unsigned.
+name: Publish Electron (npm + installers)
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        description: "Node.js version"
+        type: string
+        default: "24"
+      package_manager:
+        description: "npm | yarn | pnpm"
+        type: string
+        default: "npm"
+      working_directory:
+        description: "Directory containing package.json"
+        type: string
+        default: "."
+      install_directory:
+        description: "Directory where dependencies are installed (workspace root for monorepos)"
+        type: string
+        default: "."
+      run_tests:
+        description: "Run `npm run test` (skipped when the script does not exist)"
+        type: boolean
+        default: true
+      run_build:
+        description: "Run `npm run build` (skipped when the script does not exist)"
+        type: boolean
+        default: true
+      publish_npm:
+        description: "Publish the package to npm"
+        type: boolean
+        default: true
+      registry_url:
+        description: "npm registry URL"
+        type: string
+        default: "https://registry.npmjs.org"
+      access:
+        description: "npm access: public | restricted"
+        type: string
+        default: "public"
+      dist_tag:
+        description: "npm dist-tag. Empty = latest, or the pre-release id (1.0.0-beta.1 -> beta, otherwise next)"
+        type: string
+        default: ""
+      provenance:
+        description: "Publish to npm with provenance (public repos only)"
+        type: boolean
+        default: false
+      build_installers:
+        description: "Build desktop installers with electron-builder and attach them to the GitHub Release"
+        type: boolean
+        default: false
+      installer_os:
+        description: "JSON array of runner labels to build installers on"
+        type: string
+        default: '["macos-latest","windows-latest","ubuntu-latest"]'
+      installer_command:
+        description: "Command that produces the installers (must NOT publish by itself)"
+        type: string
+        default: "npx electron-builder --publish never"
+      dist_directory:
+        description: "Directory (relative to working_directory) where electron-builder writes installers"
+        type: string
+        default: "dist"
+      verify_tag:
+        description: "On tag pushes, fail unless the tag equals tag_prefix + the package.json version"
+        type: boolean
+        default: true
+      tag_prefix:
+        description: "Tag prefix used when verifying the tag"
+        type: string
+        default: "v"
+      skip_if_published:
+        description: "Skip the npm upload when this version already exists on the registry"
+        type: boolean
+        default: true
+      dry_run:
+        description: "Build everything but do not upload to npm or the GitHub Release"
+        type: boolean
+        default: false
+    secrets:
+      NPM_TOKEN:
+        description: "npm access token (needed when publish_npm is true)"
+        required: false
+      CSC_LINK:
+        description: "Code-signing certificate (.p12/.pfx, base64 or URL) - macOS, and Windows unless WIN_CSC_LINK is set"
+        required: false
+      CSC_KEY_PASSWORD:
+        description: "Password of CSC_LINK"
+        required: false
+      APPLE_ID:
+        description: "Apple ID used for notarization"
+        required: false
+      APPLE_APP_SPECIFIC_PASSWORD:
+        description: "App-specific password for the Apple ID"
+        required: false
+      APPLE_TEAM_ID:
+        description: "Apple developer team ID"
+        required: false
+      WIN_CSC_LINK:
+        description: "Windows code-signing certificate (.pfx, base64 or URL)"
+        required: false
+      WIN_CSC_KEY_PASSWORD:
+        description: "Password of WIN_CSC_LINK"
+        required: false
+    outputs:
+      version:
+        description: "Package version read from package.json"
+        value: ${{ jobs.meta.outputs.version }}
+      published:
+        description: "'true' when the package was uploaded to npm"
+        value: ${{ jobs.npm.outputs.published || 'false' }}
+
+jobs:
+  meta:
+    name: Read version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      name: ${{ steps.meta.outputs.name }}
+      version: ${{ steps.meta.outputs.version }}
+      dist_tag: ${{ steps.meta.outputs.dist-tag }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Read package metadata
+        id: meta
+        uses: KMM-ZONE/open-flows/actions/read-npm-package@v1.0.0
+        with:
+          directory: ${{ inputs.working_directory }}
+          dist-tag: ${{ inputs.dist_tag }}
+          fail-if-private: ${{ inputs.publish_npm }}
+
+      - name: Verify tag matches package version
+        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.0
+        with:
+          version: ${{ steps.meta.outputs.version }}
+          tag-prefix: ${{ inputs.tag_prefix }}
+          enabled: ${{ inputs.verify_tag }}
+
+  npm:
+    name: Publish to npm
+    needs: meta
+    if: ${{ inputs.publish_npm }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write  # only used when provenance: true
+    outputs:
+      published: ${{ steps.result.outputs.published }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: KMM-ZONE/open-flows/actions/setup-node-project@v1.0.0
+        with:
+          node-version: ${{ inputs.node_version }}
+          package-manager: ${{ inputs.package_manager }}
+          registry-url: ${{ inputs.registry_url }}
+          cache: 'false'
+          install-directory: ${{ inputs.install_directory }}
+
+      - name: Check credentials
+        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.0
+        with:
+          enabled: ${{ !inputs.dry_run }}
+          secrets: |
+            NPM_TOKEN=${{ secrets.NPM_TOKEN }}
+
+      - name: Check whether this version is already published
+        id: exists
+        if: ${{ inputs.skip_if_published }}
+        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.0.0
+        with:
+          registry: npm
+          name: ${{ needs.meta.outputs.name }}
+          version: ${{ needs.meta.outputs.version }}
+          registry-url: ${{ inputs.registry_url }}
+          auth-token: ${{ secrets.NPM_TOKEN }}
+
+      - name: Install dependencies
+        if: ${{ steps.exists.outputs.exists != 'true' }}
+        uses: KMM-ZONE/open-flows/actions/install-node-deps@v1.0.0
+        with:
+          package-manager: ${{ inputs.package_manager }}
+          directory: ${{ inputs.install_directory }}
+
+      - name: Test
+        if: ${{ inputs.run_tests && steps.exists.outputs.exists != 'true' }}
+        working-directory: ${{ inputs.working_directory }}
+        run: npm run --if-present test
+
+      - name: Build
+        if: ${{ inputs.run_build && steps.exists.outputs.exists != 'true' }}
+        working-directory: ${{ inputs.working_directory }}
+        run: npm run --if-present build
+
+      - name: Publish (dry run)
+        if: ${{ inputs.dry_run && steps.exists.outputs.exists != 'true' }}
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          ACCESS: ${{ inputs.access }}
+          DIST_TAG: ${{ needs.meta.outputs.dist_tag }}
+        run: npm publish --dry-run --access "$ACCESS" --tag "$DIST_TAG"
+
+      - name: Publish
+        id: publish
+        if: ${{ !inputs.dry_run && steps.exists.outputs.exists != 'true' }}
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          ACCESS: ${{ inputs.access }}
+          DIST_TAG: ${{ needs.meta.outputs.dist_tag }}
+          PROVENANCE: ${{ inputs.provenance }}
+        run: |
+          ARGS=(--access "$ACCESS" --tag "$DIST_TAG")
+          if [ "$PROVENANCE" = "true" ]; then ARGS+=(--provenance); fi
+          npm publish "${ARGS[@]}"
+
+      - name: Set result
+        id: result
+        if: ${{ always() }}
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        with:
+          outcomes: ${{ steps.publish.outcome }}
+
+  installers:
+    name: Installers (${{ matrix.os }})
+    needs: meta
+    if: ${{ inputs.build_installers }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: write  # attach installers to the GitHub Release
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.installer_os) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: KMM-ZONE/open-flows/actions/setup-node-project@v1.0.0
+        with:
+          node-version: ${{ inputs.node_version }}
+          package-manager: ${{ inputs.package_manager }}
+          cache: 'false'
+
+      - name: Install dependencies
+        uses: KMM-ZONE/open-flows/actions/install-node-deps@v1.0.0
+        with:
+          package-manager: ${{ inputs.package_manager }}
+          directory: ${{ inputs.install_directory }}
+
+      - name: Build app
+        if: ${{ inputs.run_build }}
+        working-directory: ${{ inputs.working_directory }}
+        run: npm run --if-present build
+
+      - name: Build installers
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          INSTALLER_COMMAND: ${{ inputs.installer_command }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: bash -c "$INSTALLER_COMMAND"
+
+      - name: Collect installers
+        id: collect
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          DIST_DIR: ${{ inputs.dist_directory }}
+        run: |
+          OUT="${RUNNER_TEMP//\\//}/installers"
+          mkdir -p "$OUT"
+          echo "dir=$OUT" >> "$GITHUB_OUTPUT"
+          find "$DIST_DIR" -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o -name '*.msi' \
+            -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' -o -name '*.snap' -o -name '*.blockmap' \
+            -o -name 'latest*.yml' \) -exec cp {} "$OUT/" \;
+          ls -1 "$OUT"
+          if [ -z "$(ls -A "$OUT")" ]; then
+            echo "::error::No installers found in $DIST_DIR"
+            exit 1
+          fi
+
+      - name: Upload installers as workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: installers-${{ runner.os }}
+          path: ${{ runner.temp }}/installers/*
+          if-no-files-found: error
+
+      - name: Attach installers to the GitHub Release
+        if: ${{ !inputs.dry_run && github.ref_type == 'tag' }}
+        uses: KMM-ZONE/open-flows/actions/github-release@v1.0.0
+        with:
+          tag: ${{ github.ref_name }}
+          version: ${{ needs.meta.outputs.version }}
+          assets: ${{ steps.collect.outputs.dir }}/*

@@ -1,0 +1,69 @@
+# Internal piece of THIS repository's release pipeline (see _publish.yml): is the VERSION file ahead of the latest tag?
+# It runs the local composite action ./actions/check-version, so it only works inside this repository.
+# To use the same logic in YOUR repository call the action instead:
+#   call the action KMM-ZONE/open-flows/actions/check-version (see the Actions section of the README)
+name: Check version
+
+on:
+  workflow_call:
+    inputs:
+      version_file:
+        description: "Path of the plain-text version file (content: MAJOR.MINOR.PATCH[-prerelease], no leading v)"
+        type: string
+        default: "VERSION"
+      tag_prefix:
+        description: "Prefix of release tags (v -> v1.2.3)"
+        type: string
+        default: "v"
+      require_bump:
+        description: "Fail the job when the version is not bumped (use it as a pull-request gate)"
+        type: boolean
+        default: false
+    outputs:
+      version:
+        description: "Version read from the version file"
+        value: ${{ jobs.check.outputs.version }}
+      tag:
+        description: "Tag that a release of this version would use (tag_prefix + version)"
+        value: ${{ jobs.check.outputs.tag }}
+      latest_version:
+        description: "Highest existing semver tag (without prefix); empty when there is none"
+        value: ${{ jobs.check.outputs.latest_version }}
+      bumped:
+        description: "'true' when the version is higher than the latest tag"
+        value: ${{ jobs.check.outputs.bumped }}
+      prerelease:
+        description: "'true' when the version has a pre-release part (1.2.0-rc.1)"
+        value: ${{ jobs.check.outputs.prerelease }}
+      reason:
+        description: "first-release | bumped | same-version | lower-version | tag-exists"
+        value: ${{ jobs.check.outputs.reason }}
+
+jobs:
+  check:
+    name: Check version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+      latest_version: ${{ steps.check.outputs.latest-version }}
+      bumped: ${{ steps.check.outputs.bumped }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+      reason: ${{ steps.check.outputs.reason }}
+    steps:
+      - name: Checkout (with all tags)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compare the version file with the latest tag
+        id: check
+        uses: ./actions/check-version
+        with:
+          version-file: ${{ inputs.version_file }}
+          tag-prefix: ${{ inputs.tag_prefix }}
+          require-bump: ${{ inputs.require_bump }}

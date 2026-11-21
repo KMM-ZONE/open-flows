@@ -1,0 +1,45 @@
+name: Verify tag matches version
+description: >-
+  On tag runs, fail unless the git tag equals tag-prefix + the version
+  (or every version when several are given). On branch runs it does nothing.
+author: KMM-ZONE
+
+inputs:
+  version:
+    description: "Version(s) the tag must match, one per line (without the prefix)"
+    required: true
+  tag-prefix:
+    description: "Text in front of the version in the tag (v -> v1.2.3)"
+    required: false
+    default: "v"
+  enabled:
+    description: "Set to 'false' to turn the check off"
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Verify tag
+      shell: bash
+      env:
+        VERSIONS: ${{ inputs.version }}
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
+        ENABLED: ${{ inputs.enabled }}
+        REF_TYPE: ${{ github.ref_type }}
+        REF_NAME: ${{ github.ref_name }}
+      run: |
+        if [ "$ENABLED" != "true" ]; then exit 0; fi
+        if [ "$REF_TYPE" != "tag" ]; then
+          echo "ℹ️  Not a tag run - skipping tag verification"
+          exit 0
+        fi
+        while IFS= read -r V; do
+          V="${V//[[:space:]]/}"
+          if [ -z "$V" ]; then continue; fi
+          if [ "$REF_NAME" != "${TAG_PREFIX}${V}" ]; then
+            echo "::error::Tag '$REF_NAME' does not match version '$V' (expected tag '${TAG_PREFIX}${V}')"
+            exit 1
+          fi
+        done <<< "$VERSIONS"
+        echo "✅ Tag $REF_NAME matches the version"

@@ -1,0 +1,199 @@
+# Build, test, pack and publish .NET packages to NuGet (nuget.org or any NuGet feed).
+# Auth: NUGET_API_KEY secret. (NuGet trusted publishing validates the workflow that runs the job,
+# which is this reusable workflow, so an API key is the supported route for a central workflow.)
+name: Publish .NET Package (NuGet)
+
+on:
+  workflow_call:
+    inputs:
+      dotnet_version:
+        description: "SDK version(s), one per line, e.g. '8.0.x' or '9.0.x' + newline + '10.0.x'"
+        type: string
+        default: "10.0.x"
+      working_directory:
+        description: "Directory containing the solution / project"
+        type: string
+        default: "."
+      project:
+        description: "Solution or project to restore/build/test/pack (empty = the one in working_directory)"
+        type: string
+        default: ""
+      configuration:
+        description: "Build configuration"
+        type: string
+        default: "Release"
+      version_from_tag:
+        description: "On tag pushes, build and pack with -p:Version=<tag without prefix> (no version in the csproj needed)"
+        type: boolean
+        default: false
+      run_tests:
+        description: "Run `dotnet test`"
+        type: boolean
+        default: true
+      test_args:
+        description: "Extra arguments for `dotnet test`"
+        type: string
+        default: ""
+      nuget_source:
+        description: "NuGet push source URL"
+        type: string
+        default: "https://api.nuget.org/v3/index.json"
+      verify_tag:
+        description: "On tag pushes, fail unless the tag equals tag_prefix + the version of every package"
+        type: boolean
+        default: true
+      tag_prefix:
+        description: "Tag prefix used when verifying the tag / deriving the version"
+        type: string
+        default: "v"
+      dry_run:
+        description: "Build, test and pack, but do not push"
+        type: boolean
+        default: false
+    secrets:
+      NUGET_API_KEY:
+        description: "NuGet API key with push permission for the package(s)"
+        required: false
+    outputs:
+      version:
+        description: "Version of the first package produced"
+        value: ${{ jobs.publish.outputs.version }}
+      published:
+        description: "'true' when this run pushed the package(s)"
+        value: ${{ jobs.publish.outputs.published }}
+
+jobs:
+  publish:
+    name: Publish to NuGet
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      published: ${{ steps.result.outputs.published }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # tags are needed by MinVer / Nerdbank.GitVersioning
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: Check credentials
+        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.0
+        with:
+          enabled: ${{ !inputs.dry_run }}
+          secrets: |
+            NUGET_API_KEY=${{ secrets.NUGET_API_KEY }}
+
+      - name: Work out version override
+        id: override
+        env:
+          VERSION_FROM_TAG: ${{ inputs.version_from_tag }}
+          TAG_PREFIX: ${{ inputs.tag_prefix }}
+        run: |
+          ARG=""
+          if [ "$VERSION_FROM_TAG" = "true" ] && [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            V="${GITHUB_REF_NAME#"$TAG_PREFIX"}"
+            ARG="-p:Version=$V"
+            echo "ℹ️  Using version $V from tag $GITHUB_REF_NAME"
+          fi
+          echo "arg=$ARG" >> "$GITHUB_OUTPUT"
+
+      - name: Restore
+        env:
+          PROJECT: ${{ inputs.project }}
+        run: |
+          read -ra TARGET <<< "$PROJECT"
+          dotnet restore "${TARGET[@]}"
+
+      - name: Build
+        env:
+          PROJECT: ${{ inputs.project }}
+          CONFIGURATION: ${{ inputs.configuration }}
+          VERSION_ARG: ${{ steps.override.outputs.arg }}
+        run: |
+          read -ra TARGET <<< "$PROJECT"
+          read -ra OVERRIDE <<< "$VERSION_ARG"
+          dotnet build "${TARGET[@]}" --configuration "$CONFIGURATION" --no-restore "${OVERRIDE[@]}"
+
+      - name: Test
+        if: ${{ inputs.run_tests }}
+        env:
+          PROJECT: ${{ inputs.project }}
+          CONFIGURATION: ${{ inputs.configuration }}
+          TEST_ARGS: ${{ inputs.test_args }}
+        run: |
+          read -ra TARGET <<< "$PROJECT"
+          read -ra EXTRA <<< "$TEST_ARGS"
+          dotnet test "${TARGET[@]}" --configuration "$CONFIGURATION" --no-build "${EXTRA[@]}"
+
+      - name: Pack
+        env:
+          PROJECT: ${{ inputs.project }}
+          CONFIGURATION: ${{ inputs.configuration }}
+          VERSION_ARG: ${{ steps.override.outputs.arg }}
+        run: |
+          rm -rf "$RUNNER_TEMP/nupkgs"
+          read -ra TARGET <<< "$PROJECT"
+          read -ra OVERRIDE <<< "$VERSION_ARG"
+          dotnet pack "${TARGET[@]}" --configuration "$CONFIGURATION" --no-build --output "$RUNNER_TEMP/nupkgs" "${OVERRIDE[@]}"
+          ls -1 "$RUNNER_TEMP/nupkgs"
+
+      - name: Read package versions
+        id: meta
+        run: |
+          shopt -s nullglob
+          FIRST=""
+          : > "$RUNNER_TEMP/nupkg-versions.txt"
+          for PKG in "$RUNNER_TEMP"/nupkgs/*.nupkg; do
+            case "$PKG" in *.symbols.nupkg) continue ;; esac
+            ID=$(unzip -p "$PKG" '*.nuspec' | grep -oPm1 '(?<=<id>)[^<]+')
+            VER=$(unzip -p "$PKG" '*.nuspec' | grep -oPm1 '(?<=<version>)[^<]+')
+            echo "📦 $ID $VER"
+            echo "$VER" >> "$RUNNER_TEMP/nupkg-versions.txt"
+            if [ -z "$FIRST" ]; then FIRST="$VER"; fi
+          done
+          if [ -z "$FIRST" ]; then
+            echo "::error::dotnet pack produced no .nupkg – is <IsPackable> true in your project?"
+            exit 1
+          fi
+          {
+            echo "version=$FIRST"
+            echo "versions<<EOF"
+            cat "$RUNNER_TEMP/nupkg-versions.txt"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches package versions
+        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.0
+        with:
+          version: ${{ steps.meta.outputs.versions }}
+          tag-prefix: ${{ inputs.tag_prefix }}
+          enabled: ${{ inputs.verify_tag }}
+
+      - name: Push to NuGet
+        id: publish
+        if: ${{ !inputs.dry_run }}
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          SOURCE: ${{ inputs.nuget_source }}
+        run: |
+          # --skip-duplicate makes re-runs safe: versions that already exist are left untouched
+          dotnet nuget push "$RUNNER_TEMP/nupkgs/*.nupkg" --api-key "$NUGET_API_KEY" --source "$SOURCE" --skip-duplicate
+
+      - name: Set result
+        id: result
+        if: ${{ always() }}
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        with:
+          outcomes: ${{ steps.publish.outcome }}

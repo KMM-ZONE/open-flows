@@ -1,0 +1,59 @@
+# Quality gate for this repository. Runs on every change and is also called by _publish.yml before a release.
+name: Lint
+
+on:
+  workflow_call:
+  pull_request:
+    paths: [".github/**", "actions/**", "scripts/**", "VERSION", "README.md", ".yamllint.yml", ".markdownlint.jsonc"]
+  push:
+    branches: [main]
+    paths: [".github/**", "actions/**", "scripts/**", "VERSION", "README.md", ".yamllint.yml", ".markdownlint.jsonc"]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: actionlint, actions, versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install shellcheck and actionlint
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+
+      - name: Lint workflows (actionlint + shellcheck)
+        run: ./actionlint -color
+
+      - name: Lint YAML (yamllint)
+        run: |
+          python3 -m pip install --quiet yamllint
+          yamllint .
+
+      - name: Lint Markdown (markdownlint)
+        run: npx --yes markdownlint-cli README.md
+
+      - name: Check that VERSION, the action references and the README are in sync
+        run: bash scripts/update-version.sh --check
+
+      - name: Validate the composite actions and every call to them
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 scripts/validate-actions.py
+
+      - name: Test update-version.sh
+        run: bash scripts/test-update-version.sh
+
+      - name: Test the semver comparison used by the release workflows
+        run: bash scripts/test-semver.sh
+
+      - name: Report actions that are not on their latest release
+        # warning only: Dependabot opens the update PR, this just makes drift visible
+        continue-on-error: true
+        run: bash scripts/check-actions-latest.sh

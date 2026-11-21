@@ -1,0 +1,199 @@
+# Release a Swift package. Swift Package Manager "publishes" by git tag - there is no upload.
+# This workflow validates the semver tag, builds and tests on macOS, can push the podspec to CocoaPods
+# trunk, and creates the GitHub Release.
+name: Publish Swift Package (SwiftPM / CocoaPods)
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: "macOS runner label"
+        type: string
+        default: "macos-15"
+      xcode_version:
+        description: "Xcode version to select, e.g. 16.4 (empty = runner default)"
+        type: string
+        default: ""
+      working_directory:
+        description: "Directory containing Package.swift"
+        type: string
+        default: "."
+      tag:
+        description: "Existing tag to release (for workflow_dispatch). Empty = the tag that triggered the run"
+        type: string
+        default: ""
+      tag_prefix:
+        description: "Optional text before the version in the tag (a leading v is always accepted)"
+        type: string
+        default: ""
+      run_tests:
+        description: "Run `swift test`"
+        type: boolean
+        default: true
+      build_args:
+        description: "Extra arguments for `swift build`"
+        type: string
+        default: ""
+      test_args:
+        description: "Extra arguments for `swift test`"
+        type: string
+        default: ""
+      xcodebuild_scheme:
+        description: "Also run `xcodebuild test` for this scheme (needed for iOS-only packages). Empty = skip"
+        type: string
+        default: ""
+      xcodebuild_destination:
+        description: "Destination for xcodebuild test"
+        type: string
+        default: "platform=iOS Simulator,name=iPhone 16"
+      podspec:
+        description: "Path to a .podspec to push to CocoaPods trunk. Empty = SwiftPM only"
+        type: string
+        default: ""
+      github_release:
+        description: "Create a GitHub Release with generated notes (skipped when it already exists)"
+        type: boolean
+        default: true
+      dry_run:
+        description: "Build and test only (podspec is linted, nothing is pushed or released)"
+        type: boolean
+        default: false
+    secrets:
+      COCOAPODS_TRUNK_TOKEN:
+        description: "CocoaPods trunk token (only needed when podspec is set)"
+        required: false
+    outputs:
+      version:
+        description: "Semantic version of the release (without the leading v)"
+        value: ${{ jobs.publish.outputs.version }}
+      published:
+        description: "'true' when the podspec was pushed or the release created"
+        value: ${{ jobs.publish.outputs.published }}
+
+jobs:
+  publish:
+    name: Release Swift package
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: write  # create the GitHub Release
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      published: ${{ steps.result.outputs.published }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select Xcode
+        if: ${{ inputs.xcode_version != '' }}
+        env:
+          XCODE_VERSION: ${{ inputs.xcode_version }}
+        run: |
+          APP="/Applications/Xcode_${XCODE_VERSION}.app"
+          if [ ! -d "$APP" ]; then
+            echo "::error::$APP not found on this runner. Installed versions:"
+            find /Applications -maxdepth 1 -iname 'Xcode*' -print
+            exit 1
+          fi
+          sudo xcode-select -s "$APP"
+          xcodebuild -version
+
+      - name: Validate tag
+        id: meta
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          TAG_PREFIX: ${{ inputs.tag_prefix }}
+        run: |
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ]; then
+            if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+              echo "::error::Swift packages are released by tag. Run this workflow on a tag push, or pass the 'tag' input."
+              exit 1
+            fi
+            TAG="$GITHUB_REF_NAME"
+          fi
+          VERSION="${TAG#"$TAG_PREFIX"}"
+          VERSION="${VERSION#v}"
+          SEMVER_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+          if ! [[ "$VERSION" =~ $SEMVER_RE ]]; then
+            echo "::error::Tag '$TAG' is not a semantic version (SwiftPM needs MAJOR.MINOR.PATCH, optionally prefixed with v)"
+            exit 1
+          fi
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
+          echo "📦 $VERSION (tag $TAG)"
+
+      - name: Resolve dependencies
+        run: swift package resolve
+
+      - name: Build
+        env:
+          BUILD_ARGS: ${{ inputs.build_args }}
+        run: |
+          read -ra EXTRA <<< "$BUILD_ARGS"
+          swift build "${EXTRA[@]}"
+
+      - name: Test
+        if: ${{ inputs.run_tests }}
+        env:
+          TEST_ARGS: ${{ inputs.test_args }}
+        run: |
+          read -ra EXTRA <<< "$TEST_ARGS"
+          swift test "${EXTRA[@]}"
+
+      - name: Test with xcodebuild
+        if: ${{ inputs.run_tests && inputs.xcodebuild_scheme != '' }}
+        env:
+          SCHEME: ${{ inputs.xcodebuild_scheme }}
+          DESTINATION: ${{ inputs.xcodebuild_destination }}
+        run: xcodebuild test -scheme "$SCHEME" -destination "$DESTINATION"
+
+      - name: Lint podspec (dry run)
+        if: ${{ inputs.dry_run && inputs.podspec != '' }}
+        env:
+          PODSPEC: ${{ inputs.podspec }}
+        run: pod lib lint "$PODSPEC" --allow-warnings
+
+      - name: Push podspec to CocoaPods trunk
+        id: pod
+        if: ${{ !inputs.dry_run && inputs.podspec != '' }}
+        env:
+          PODSPEC: ${{ inputs.podspec }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          COCOAPODS_TRUNK_TOKEN: ${{ secrets.COCOAPODS_TRUNK_TOKEN }}
+        run: |
+          if [ -z "$COCOAPODS_TRUNK_TOKEN" ]; then
+            echo "::error::The COCOAPODS_TRUNK_TOKEN secret is not set (needed because 'podspec' is set)."
+            exit 1
+          fi
+          POD_VERSION=$(pod ipc spec "$PODSPEC" | jq -r .version)
+          if [ "$POD_VERSION" != "$VERSION" ]; then
+            echo "::error::Podspec version '$POD_VERSION' does not match the tag version '$VERSION'"
+            exit 1
+          fi
+          pod trunk push "$PODSPEC" --allow-warnings
+
+      - name: Create GitHub Release
+        id: release
+        if: ${{ !inputs.dry_run && inputs.github_release }}
+        uses: KMM-ZONE/open-flows/actions/github-release@v1.0.0
+        with:
+          tag: ${{ steps.meta.outputs.tag }}
+          version: ${{ steps.meta.outputs.version }}
+
+      - name: Set result
+        id: result
+        if: ${{ always() }}
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        with:
+          outcomes: ${{ steps.pod.outcome }} ${{ steps.release.outcome }}

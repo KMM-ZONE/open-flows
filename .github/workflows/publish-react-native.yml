@@ -1,0 +1,215 @@
+# Publish a React Native library to npm (react-native-builder-bob / create-react-native-library layout).
+# Runs typecheck, lint, tests and the library build, then publishes the package.
+# Auth: NPM_TOKEN secret (granular access token with read+write on the package, or an automation token).
+# npm "trusted publishing" (OIDC) validates the CALLING workflow file, so it cannot be used
+# from a centralized reusable workflow – use the token.
+name: Publish React Native Library (npm)
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        description: "Node.js version"
+        type: string
+        default: "24"
+      package_manager:
+        description: "Package manager used for installing dependencies: npm | yarn | pnpm"
+        type: string
+        default: "yarn"
+      working_directory:
+        description: "Directory of the package to publish (contains package.json)"
+        type: string
+        default: "."
+      install_directory:
+        description: "Directory where dependencies are installed (workspace root for monorepos)"
+        type: string
+        default: "."
+      registry_url:
+        description: "Registry URL"
+        type: string
+        default: "https://registry.npmjs.org"
+      access:
+        description: "Package access: public | restricted"
+        type: string
+        default: "public"
+      dist_tag:
+        description: "npm dist-tag. Empty = latest, or the pre-release id (1.0.0-beta.1 -> beta, otherwise next)"
+        type: string
+        default: ""
+      provenance:
+        description: "Publish with provenance (public repos only; needs id-token: write in the caller)"
+        type: boolean
+        default: false
+      cache:
+        description: "Cache the package manager store (needs a lock file)"
+        type: boolean
+        default: true
+      run_typecheck:
+        description: "Run `npm run typecheck` (skipped when the script does not exist)"
+        type: boolean
+        default: true
+      run_lint:
+        description: "Run `npm run lint` (skipped when the script does not exist)"
+        type: boolean
+        default: true
+      run_tests:
+        description: "Run `npm run test` (skipped when the script does not exist)"
+        type: boolean
+        default: true
+      run_build:
+        description: "Run `npm run build` (skipped when the script does not exist)"
+        type: boolean
+        default: true
+      publish_command:
+        description: "Custom publish command (e.g. 'pnpm publish --no-git-checks'). Empty = npm publish"
+        type: string
+        default: ""
+      verify_tag:
+        description: "On tag pushes, fail unless the tag equals tag_prefix + the package.json version"
+        type: boolean
+        default: true
+      tag_prefix:
+        description: "Tag prefix used when verifying the tag"
+        type: string
+        default: "v"
+      skip_if_published:
+        description: "Exit successfully when this version already exists on the registry"
+        type: boolean
+        default: true
+      dry_run:
+        description: "Run everything except the final upload (uses `npm publish --dry-run`)"
+        type: boolean
+        default: false
+    secrets:
+      NPM_TOKEN:
+        description: "npm access token used to publish"
+        required: false
+    outputs:
+      version:
+        description: "Package version read from package.json"
+        value: ${{ jobs.publish.outputs.version }}
+      published:
+        description: "'true' when this run uploaded the package"
+        value: ${{ jobs.publish.outputs.published }}
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write  # only used when provenance: true
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      published: ${{ steps.result.outputs.published }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: KMM-ZONE/open-flows/actions/setup-node-project@v1.0.0
+        with:
+          node-version: ${{ inputs.node_version }}
+          package-manager: ${{ inputs.package_manager }}
+          registry-url: ${{ inputs.registry_url }}
+          cache: ${{ inputs.cache }}
+          install-directory: ${{ inputs.install_directory }}
+
+      - name: Read package metadata
+        id: meta
+        uses: KMM-ZONE/open-flows/actions/read-npm-package@v1.0.0
+        with:
+          directory: ${{ inputs.working_directory }}
+          dist-tag: ${{ inputs.dist_tag }}
+
+      - name: Verify tag matches package version
+        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.0
+        with:
+          version: ${{ steps.meta.outputs.version }}
+          tag-prefix: ${{ inputs.tag_prefix }}
+          enabled: ${{ inputs.verify_tag }}
+
+      - name: Check credentials
+        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.0
+        with:
+          enabled: ${{ !inputs.dry_run }}
+          secrets: |
+            NPM_TOKEN=${{ secrets.NPM_TOKEN }}
+
+      - name: Check whether this version is already published
+        id: exists
+        if: ${{ inputs.skip_if_published }}
+        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.0.0
+        with:
+          registry: npm
+          name: ${{ steps.meta.outputs.name }}
+          version: ${{ steps.meta.outputs.version }}
+          registry-url: ${{ inputs.registry_url }}
+          auth-token: ${{ secrets.NPM_TOKEN }}
+
+      - name: Install dependencies
+        if: ${{ steps.exists.outputs.exists != 'true' }}
+        uses: KMM-ZONE/open-flows/actions/install-node-deps@v1.0.0
+        with:
+          package-manager: ${{ inputs.package_manager }}
+          directory: ${{ inputs.install_directory }}
+
+      - name: Typecheck
+        if: ${{ inputs.run_typecheck && steps.exists.outputs.exists != 'true' }}
+        working-directory: ${{ inputs.working_directory }}
+        run: npm run --if-present typecheck
+
+      - name: Lint
+        if: ${{ inputs.run_lint && steps.exists.outputs.exists != 'true' }}
+        working-directory: ${{ inputs.working_directory }}
+        run: npm run --if-present lint
+
+      - name: Test
+        if: ${{ inputs.run_tests && steps.exists.outputs.exists != 'true' }}
+        working-directory: ${{ inputs.working_directory }}
+        run: npm run --if-present test
+
+      - name: Build
+        if: ${{ inputs.run_build && steps.exists.outputs.exists != 'true' }}
+        working-directory: ${{ inputs.working_directory }}
+        run: npm run --if-present build
+
+      - name: Publish (dry run)
+        if: ${{ inputs.dry_run && steps.exists.outputs.exists != 'true' }}
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          ACCESS: ${{ inputs.access }}
+          DIST_TAG: ${{ steps.meta.outputs.dist-tag }}
+        run: npm publish --dry-run --access "$ACCESS" --tag "$DIST_TAG"
+
+      - name: Publish
+        id: publish
+        if: ${{ !inputs.dry_run && steps.exists.outputs.exists != 'true' }}
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          ACCESS: ${{ inputs.access }}
+          DIST_TAG: ${{ steps.meta.outputs.dist-tag }}
+          PROVENANCE: ${{ inputs.provenance }}
+          PUBLISH_COMMAND: ${{ inputs.publish_command }}
+        run: |
+          if [ -n "$PUBLISH_COMMAND" ]; then
+            bash -c "$PUBLISH_COMMAND"
+          else
+            ARGS=(--access "$ACCESS" --tag "$DIST_TAG")
+            if [ "$PROVENANCE" = "true" ]; then ARGS+=(--provenance); fi
+            npm publish "${ARGS[@]}"
+          fi
+
+      - name: Set result
+        id: result
+        if: ${{ always() }}
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        with:
+          outcomes: ${{ steps.publish.outcome }}

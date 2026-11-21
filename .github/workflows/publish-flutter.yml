@@ -1,0 +1,184 @@
+# Publish a Flutter or pure-Dart package to pub.dev.
+# Auth: pub.dev "automated publishing" through GitHub OIDC – no secret is needed.
+# One-time setup: pub.dev -> package -> Admin -> Automated publishing -> enable GitHub Actions,
+# repository = the CALLING repo, tag pattern = v{{version}}.
+name: Publish Flutter Package (pub.dev)
+
+on:
+  workflow_call:
+    inputs:
+      flutter_version:
+        description: "Flutter SDK version, e.g. 3.38.1 (empty = latest of the channel)"
+        type: string
+        default: ""
+      flutter_channel:
+        description: "Flutter channel"
+        type: string
+        default: "stable"
+      dart_only:
+        description: "Pure Dart package: use the Dart SDK (dart analyze / dart test) instead of Flutter"
+        type: boolean
+        default: false
+      working_directory:
+        description: "Directory containing pubspec.yaml"
+        type: string
+        default: "."
+      runner:
+        description: "Runner label. Use macos-latest if the package needs Xcode tooling"
+        type: string
+        default: "ubuntu-latest"
+      check_format:
+        description: "Fail if `dart format` would change lib/ or test/"
+        type: boolean
+        default: false
+      run_analyze:
+        description: "Run static analysis"
+        type: boolean
+        default: true
+      run_tests:
+        description: "Run tests (skipped automatically when there is no test/ directory)"
+        type: boolean
+        default: true
+      verify_tag:
+        description: "On tag pushes, fail unless the tag equals tag_prefix + the pubspec version"
+        type: boolean
+        default: true
+      tag_prefix:
+        description: "Tag prefix used when verifying the tag"
+        type: string
+        default: "v"
+      skip_if_published:
+        description: "Exit successfully when this version already exists on pub.dev"
+        type: boolean
+        default: true
+      dry_run:
+        description: "Run everything except the final upload (uses `pub publish --dry-run`)"
+        type: boolean
+        default: false
+    outputs:
+      version:
+        description: "Package version read from pubspec.yaml"
+        value: ${{ jobs.publish.outputs.version }}
+      published:
+        description: "'true' when this run uploaded the package"
+        value: ${{ jobs.publish.outputs.published }}
+
+jobs:
+  publish:
+    name: Publish to pub.dev
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write  # pub.dev automated publishing (OIDC)
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      published: ${{ steps.result.outputs.published }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Flutter
+        if: ${{ !inputs.dart_only }}
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2  # v2.23.0
+        with:
+          channel: ${{ inputs.flutter_channel }}
+          flutter-version: ${{ inputs.flutter_version }}
+          cache: true
+
+      # Also configures the OIDC token that `pub publish` uses on pub.dev.
+      - name: Set up Dart
+        uses: dart-lang/setup-dart@2286a0c042b44434fe26d292bbce8d34f7ec662b  # v1.8.2
+        with:
+          problem-matcher: false
+
+      - name: Read package metadata
+        id: meta
+        run: |
+          NAME=$(sed -n 's/^name: *//p' pubspec.yaml | head -1 | sed 's/#.*//' | tr -d "\"' \r")
+          VERSION=$(sed -n 's/^version: *//p' pubspec.yaml | head -1 | sed 's/#.*//' | tr -d "\"' \r")
+          if [ -z "$NAME" ] || [ -z "$VERSION" ]; then
+            echo "::error::Could not read name/version from pubspec.yaml"
+            exit 1
+          fi
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "📦 $NAME $VERSION"
+
+      - name: Verify tag matches pubspec version
+        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.0
+        with:
+          version: ${{ steps.meta.outputs.version }}
+          tag-prefix: ${{ inputs.tag_prefix }}
+          enabled: ${{ inputs.verify_tag }}
+
+      - name: Check whether this version is already on pub.dev
+        id: exists
+        if: ${{ inputs.skip_if_published }}
+        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.0.0
+        with:
+          registry: pub
+          name: ${{ steps.meta.outputs.name }}
+          version: ${{ steps.meta.outputs.version }}
+
+      - name: Install dependencies
+        if: ${{ steps.exists.outputs.exists != 'true' }}
+        env:
+          DART_ONLY: ${{ inputs.dart_only }}
+        run: |
+          if [ "$DART_ONLY" = "true" ]; then dart pub get; else flutter pub get; fi
+
+      - name: Check formatting
+        if: ${{ inputs.check_format && steps.exists.outputs.exists != 'true' }}
+        run: |
+          DIRS=()
+          for D in lib test; do
+            if [ -d "$D" ]; then DIRS+=("$D"); fi
+          done
+          dart format --output=none --set-exit-if-changed "${DIRS[@]}"
+
+      - name: Analyze
+        if: ${{ inputs.run_analyze && steps.exists.outputs.exists != 'true' }}
+        env:
+          DART_ONLY: ${{ inputs.dart_only }}
+        run: |
+          if [ "$DART_ONLY" = "true" ]; then dart analyze; else flutter analyze; fi
+
+      - name: Test
+        if: ${{ inputs.run_tests && steps.exists.outputs.exists != 'true' }}
+        env:
+          DART_ONLY: ${{ inputs.dart_only }}
+        run: |
+          if [ ! -d test ]; then
+            echo "::notice::No test/ directory – skipping tests"
+            exit 0
+          fi
+          if [ "$DART_ONLY" = "true" ]; then dart test; else flutter test; fi
+
+      - name: Validate package (dry run)
+        if: ${{ steps.exists.outputs.exists != 'true' }}
+        env:
+          DART_ONLY: ${{ inputs.dart_only }}
+        run: |
+          if [ "$DART_ONLY" = "true" ]; then dart pub publish --dry-run; else flutter pub publish --dry-run; fi
+
+      - name: Publish to pub.dev
+        id: publish
+        if: ${{ !inputs.dry_run && steps.exists.outputs.exists != 'true' }}
+        env:
+          DART_ONLY: ${{ inputs.dart_only }}
+        run: |
+          if [ "$DART_ONLY" = "true" ]; then dart pub publish --force; else flutter pub publish --force; fi
+
+      - name: Set result
+        id: result
+        if: ${{ always() }}
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        with:
+          outcomes: ${{ steps.publish.outcome }}

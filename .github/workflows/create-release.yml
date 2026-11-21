@@ -1,0 +1,78 @@
+# Internal piece of THIS repository's release pipeline (see _publish.yml): tag, GitHub Release and major alias.
+# It runs the local composite action ./actions/create-release, so it only works inside this repository.
+# To use the same logic in YOUR repository call the action instead:
+#   call the action KMM-ZONE/open-flows/actions/create-release (see the Actions section of the README)
+name: Create release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version to release, e.g. 1.2.3 (must equal the content of the version file at sha)"
+        type: string
+        required: true
+      version_file:
+        description: "Path of the plain-text version file"
+        type: string
+        default: "VERSION"
+      tag_prefix:
+        description: "Prefix of release tags (v -> v1.2.3)"
+        type: string
+        default: "v"
+      sha:
+        description: "Commit to tag (empty = the commit that triggered the run)"
+        type: string
+        default: ""
+      notes:
+        description: "Text placed above the automatically generated release notes"
+        type: string
+        default: ""
+      update_major_tag:
+        description: "Move the major alias tag (v1) to this release when it is the newest stable release of its major"
+        type: boolean
+        default: true
+      dry_run:
+        description: "Only print what would be created"
+        type: boolean
+        default: false
+    outputs:
+      tag:
+        description: "Tag that was (or would be) created"
+        value: ${{ jobs.release.outputs.tag }}
+      url:
+        description: "URL of the GitHub Release"
+        value: ${{ jobs.release.outputs.url }}
+      released:
+        description: "'true' when a release was created"
+        value: ${{ jobs.release.outputs.released }}
+
+jobs:
+  release:
+    name: Create release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write  # create the tag + release, move the alias tag
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      url: ${{ steps.release.outputs.url }}
+      released: ${{ steps.release.outputs.released }}
+    steps:
+      - name: Checkout (with all tags)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create tag, release and alias
+        id: release
+        uses: ./actions/create-release
+        with:
+          version: ${{ inputs.version }}
+          version-file: ${{ inputs.version_file }}
+          tag-prefix: ${{ inputs.tag_prefix }}
+          sha: ${{ inputs.sha }}
+          notes: ${{ inputs.notes }}
+          update-major-tag: ${{ inputs.update_major_tag }}
+          dry-run: ${{ inputs.dry_run }}

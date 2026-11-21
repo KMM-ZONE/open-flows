@@ -1,0 +1,120 @@
+name: GitHub release with assets
+description: >-
+  Creates a GitHub Release for an existing tag (generated notes, pre-release detection) or,
+  when it already exists, just uploads the assets. Safe to call from several jobs at once.
+author: KMM-ZONE
+
+inputs:
+  tag:
+    description: "Tag of the release"
+    required: true
+  version:
+    description: "Version, used to mark pre-releases (a '-' in the version = pre-release). Empty = derive from the tag"
+    required: false
+    default: ""
+  assets:
+    description: "Files to attach, one path or glob per line. Every pattern must match something"
+    required: false
+    default: ""
+  optional-assets:
+    description: "Files to attach when present, one path or glob per line"
+    required: false
+    default: ""
+  generate-notes:
+    description: "Generate release notes automatically"
+    required: false
+    default: "true"
+  notes:
+    description: "Text placed above the generated notes"
+    required: false
+    default: ""
+  require-existing-tag:
+    description: "Refuse to create a tag: the tag must already exist"
+    required: false
+    default: "true"
+  token:
+    description: "Token with contents: write"
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  url:
+    description: "URL of the release"
+    value: ${{ steps.release.outputs.url }}
+  created:
+    description: "'true' when this call created the release, 'false' when it already existed"
+    value: ${{ steps.release.outputs.created }}
+
+runs:
+  using: composite
+  steps:
+    - name: Create or update the release
+      id: release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        TAG: ${{ inputs.tag }}
+        VERSION_INPUT: ${{ inputs.version }}
+        ASSETS: ${{ inputs.assets }}
+        OPTIONAL_ASSETS: ${{ inputs.optional-assets }}
+        GENERATE_NOTES: ${{ inputs.generate-notes }}
+        NOTES: ${{ inputs.notes }}
+        REQUIRE_TAG: ${{ inputs.require-existing-tag }}
+      run: |
+        if ! command -v gh > /dev/null 2>&1; then
+          echo "::error::The gh CLI is not installed on this runner (https://cli.github.com)"
+          exit 1
+        fi
+        VERSION="${VERSION_INPUT:-$TAG}"
+
+        FILES=()
+        expand() { # $1 = newline separated patterns, $2 = "required" | "optional"
+          local PATTERN MATCHES
+          while IFS= read -r PATTERN; do
+            PATTERN="${PATTERN#"${PATTERN%%[![:space:]]*}"}"
+            if [ -z "$PATTERN" ]; then continue; fi
+            MATCHES=$(compgen -G "$PATTERN" || true)
+            if [ -z "$MATCHES" ]; then
+              if [ "$2" = "required" ]; then
+                echo "::error::No file matches '$PATTERN'"
+                return 1
+              fi
+              continue
+            fi
+            while IFS= read -r F; do FILES+=("$F"); done <<< "$MATCHES"
+          done <<< "$1"
+        }
+        expand "$ASSETS" required
+        expand "$OPTIONAL_ASSETS" optional
+
+        upload() {
+          if [ "${#FILES[@]}" -gt 0 ]; then gh release upload "$TAG" "${FILES[@]}" --clobber; fi
+        }
+
+        if gh release view "$TAG" > /dev/null 2>&1; then
+          echo "ℹ️  Release $TAG already exists - uploading assets only"
+          upload
+          CREATED=false
+        else
+          ARGS=(--title "$TAG")
+          if [ "$GENERATE_NOTES" = "true" ]; then ARGS+=(--generate-notes); fi
+          if [ -n "$NOTES" ]; then ARGS+=(--notes "$NOTES"); fi
+          if [ "$REQUIRE_TAG" = "true" ]; then ARGS+=(--verify-tag); fi
+          if [[ "$VERSION" == *-* ]]; then ARGS+=(--prerelease); fi
+          if gh release create "$TAG" "${FILES[@]}" "${ARGS[@]}"; then
+            CREATED=true
+          elif gh release view "$TAG" > /dev/null 2>&1; then
+            echo "ℹ️  Release $TAG was created by a parallel job - uploading assets only"
+            upload
+            CREATED=false
+          else
+            echo "::error::Could not create release $TAG"
+            exit 1
+          fi
+        fi
+        URL=$(gh release view "$TAG" --json url --jq .url)
+        {
+          echo "url=$URL"
+          echo "created=$CREATED"
+        } >> "$GITHUB_OUTPUT"
+        echo "🚀 $URL"

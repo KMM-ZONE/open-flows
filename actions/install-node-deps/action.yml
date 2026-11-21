@@ -1,0 +1,38 @@
+name: Install Node.js dependencies
+description: Installs dependencies reproducibly with npm, yarn (classic or berry) or pnpm.
+author: KMM-ZONE
+
+inputs:
+  package-manager:
+    description: "npm | yarn | pnpm"
+    required: false
+    default: "npm"
+  directory:
+    description: "Folder to install in (workspace root for monorepos)"
+    required: false
+    default: "."
+
+runs:
+  using: composite
+  steps:
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ inputs.directory }}
+      env:
+        PM: ${{ inputs.package-manager }}
+      run: |
+        case "$PM" in
+          npm)
+            if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then npm ci; else npm install --no-audit --no-fund; fi
+            ;;
+          yarn)
+            if [ "$(yarn --version | cut -d. -f1)" -ge 2 ]; then yarn install --immutable; else yarn install --frozen-lockfile; fi
+            ;;
+          pnpm)
+            pnpm install --frozen-lockfile
+            ;;
+          *)
+            echo "::error::package-manager must be npm, yarn or pnpm (got '$PM')"
+            exit 1
+            ;;
+        esac

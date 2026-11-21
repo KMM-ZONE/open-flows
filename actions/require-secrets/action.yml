@@ -1,0 +1,61 @@
+name: Require secrets
+description: >-
+  Fail early with a clear message when a required secret was not passed to the workflow.
+  Values are never printed.
+author: KMM-ZONE
+
+inputs:
+  secrets:
+    description: >-
+      One NAME=value per line (the value is the secret itself).
+      A value may span several lines (PEM / GPG keys).
+    required: true
+  mode:
+    description: "'all' = every secret must be set, 'any' = at least one must be set"
+    required: false
+    default: "all"
+  enabled:
+    description: "Set to 'false' to skip the check (for example on a dry run)"
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Check secrets
+      shell: bash
+      env:
+        SECRETS: ${{ inputs.secrets }}
+        MODE: ${{ inputs.mode }}
+        ENABLED: ${{ inputs.enabled }}
+      run: |
+        if [ "$ENABLED" != "true" ]; then exit 0; fi
+        declare -A VALUES=()
+        ORDER=()
+        CURRENT=""
+        while IFS= read -r LINE || [ -n "$LINE" ]; do
+          if [[ "$LINE" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            CURRENT="${BASH_REMATCH[1]}"
+            VALUES[$CURRENT]="${BASH_REMATCH[2]}"
+            ORDER+=("$CURRENT")
+          elif [ -n "$CURRENT" ]; then
+            VALUES[$CURRENT]+=$'\n'"$LINE"
+          fi
+        done <<< "$SECRETS"
+        MISSING=()
+        PRESENT=0
+        for NAME in "${ORDER[@]}"; do
+          VALUE="${VALUES[$NAME]}"
+          VALUE="${VALUE//[[:space:]]/}"
+          if [ -z "$VALUE" ]; then MISSING+=("$NAME"); else PRESENT=$((PRESENT + 1)); fi
+        done
+        if [ "$MODE" = "any" ]; then
+          if [ "$PRESENT" -eq 0 ]; then
+            echo "::error::None of these secrets is set: ${MISSING[*]}. Pass at least one to the workflow under 'secrets:'."
+            exit 1
+          fi
+        elif [ "${#MISSING[@]}" -gt 0 ]; then
+          echo "::error::Missing secret(s): ${MISSING[*]}. Pass them to the workflow under 'secrets:'."
+          exit 1
+        fi
+        echo "✅ Required secrets are present"

@@ -1,0 +1,62 @@
+name: Read npm package
+description: Reads name and version from package.json and works out the npm dist-tag for the release.
+author: KMM-ZONE
+
+inputs:
+  directory:
+    description: "Folder containing package.json"
+    required: false
+    default: "."
+  dist-tag:
+    description: "Force a dist-tag. Empty = latest, or the pre-release id (1.0.0-beta.1 -> beta, otherwise next)"
+    required: false
+    default: ""
+  fail-if-private:
+    description: "Fail when package.json has \"private\": true (npm refuses to publish those)"
+    required: false
+    default: "true"
+
+outputs:
+  name:
+    description: "Package name"
+    value: ${{ steps.read.outputs.name }}
+  version:
+    description: "Package version"
+    value: ${{ steps.read.outputs.version }}
+  dist-tag:
+    description: "npm dist-tag to publish under"
+    value: ${{ steps.read.outputs.dist-tag }}
+
+runs:
+  using: composite
+  steps:
+    - name: Read package.json
+      id: read
+      shell: bash
+      working-directory: ${{ inputs.directory }}
+      env:
+        DIST_TAG_INPUT: ${{ inputs.dist-tag }}
+        FAIL_IF_PRIVATE: ${{ inputs.fail-if-private }}
+      run: |
+        NAME=$(node -p "require('./package.json').name")
+        VERSION=$(node -p "require('./package.json').version")
+        PRIVATE=$(node -p "Boolean(require('./package.json').private)")
+        if [ "$PRIVATE" = "true" ] && [ "$FAIL_IF_PRIVATE" = "true" ]; then
+          echo "::error::package.json has \"private\": true - npm will refuse to publish it"
+          exit 1
+        fi
+        if [ -n "$DIST_TAG_INPUT" ]; then
+          DIST_TAG="$DIST_TAG_INPUT"
+        elif [[ "$VERSION" == *-* ]]; then
+          PRE="${VERSION#*-}"
+          ID="${PRE%%.*}"
+          if [[ "$ID" =~ ^[A-Za-z][A-Za-z0-9-]*$ ]]; then DIST_TAG="$ID"; else DIST_TAG="next"; fi
+        else
+          DIST_TAG="latest"
+        fi
+        {
+          echo "name=$NAME"
+          echo "version=$VERSION"
+          echo "dist-tag=$DIST_TAG"
+        } >> "$GITHUB_OUTPUT"
+        echo "📦 $NAME $VERSION (dist-tag: $DIST_TAG)"

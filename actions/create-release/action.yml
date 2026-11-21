@@ -1,0 +1,205 @@
+name: Create release
+description: >-
+  Creates the git tag and GitHub Release for a version and keeps the major alias tag (v1) on the newest
+  stable release of that major. Run actions/checkout (any depth) first so the repository is available.
+author: KMM-ZONE
+
+inputs:
+  version:
+    description: "Version to release, e.g. 1.2.3 (must equal the content of the version file at the commit)"
+    required: true
+  version-file:
+    description: "Plain-text version file"
+    required: false
+    default: "VERSION"
+  tag-prefix:
+    description: "Prefix of release tags (v -> v1.2.3)"
+    required: false
+    default: "v"
+  sha:
+    description: "Commit to tag (empty = the checked-out commit)"
+    required: false
+    default: ""
+  notes:
+    description: "Text placed above the generated release notes"
+    required: false
+    default: ""
+  update-major-tag:
+    description: "Move the major alias tag (v1) when this is the newest stable release of its major"
+    required: false
+    default: "true"
+  dry-run:
+    description: "Only print what would be created"
+    required: false
+    default: "false"
+  token:
+    description: "Token with contents: write"
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  tag:
+    description: "Tag that was (or would be) created"
+    value: ${{ steps.release.outputs.tag }}
+  url:
+    description: "URL of the GitHub Release"
+    value: ${{ steps.release.outputs.url }}
+  released:
+    description: "'true' when a release was created"
+    value: ${{ steps.release.outputs.released }}
+
+runs:
+  using: composite
+  steps:
+    - name: Create tag, release and alias
+      id: release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        VERSION: ${{ inputs.version }}
+        VERSION_FILE: ${{ inputs.version-file }}
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
+        INPUT_SHA: ${{ inputs.sha }}
+        NOTES: ${{ inputs.notes }}
+        UPDATE_MAJOR: ${{ inputs.update-major-tag }}
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+        export LC_ALL=C
+        SEMVER_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+
+        # >>> semver_cmp
+        # prints -1, 0 or 1 for "$1 <=> $2" using SemVer 2.0.0 precedence (build metadata ignored)
+        semver_cmp() {
+          local a="${1%%+*}" b="${2%%+*}"
+          local a_core="${a%%-*}" b_core="${b%%-*}"
+          local a_pre="" b_pre=""
+          if [[ "$a" == *-* ]]; then a_pre="${a#*-}"; fi
+          if [[ "$b" == *-* ]]; then b_pre="${b#*-}"; fi
+          local IFS=.
+          local -a ac bc ap bp
+          read -ra ac <<< "$a_core"
+          read -ra bc <<< "$b_core"
+          local i
+          for i in 0 1 2; do
+            if (( 10#${ac[i]} > 10#${bc[i]} )); then echo 1; return; fi
+            if (( 10#${ac[i]} < 10#${bc[i]} )); then echo -1; return; fi
+          done
+          if [ -z "$a_pre" ] && [ -z "$b_pre" ]; then echo 0; return; fi
+          if [ -z "$a_pre" ]; then echo 1; return; fi
+          if [ -z "$b_pre" ]; then echo -1; return; fi
+          read -ra ap <<< "$a_pre"
+          read -ra bp <<< "$b_pre"
+          local n=${#ap[@]}
+          if (( ${#bp[@]} > n )); then n=${#bp[@]}; fi
+          local x y
+          for (( i = 0; i < n; i++ )); do
+            x="${ap[i]-}"
+            y="${bp[i]-}"
+            if [ -z "$x" ]; then echo -1; return; fi
+            if [ -z "$y" ]; then echo 1; return; fi
+            if [[ "$x" =~ ^[0-9]+$ ]] && [[ "$y" =~ ^[0-9]+$ ]]; then
+              if (( 10#$x > 10#$y )); then echo 1; return; fi
+              if (( 10#$x < 10#$y )); then echo -1; return; fi
+            elif [[ "$x" =~ ^[0-9]+$ ]]; then
+              echo -1; return
+            elif [[ "$y" =~ ^[0-9]+$ ]]; then
+              echo 1; return
+            else
+              if [[ "$x" > "$y" ]]; then echo 1; return; fi
+              if [[ "$x" < "$y" ]]; then echo -1; return; fi
+            fi
+          done
+          echo 0
+        }
+        # <<< semver_cmp
+
+        if [ "$(git rev-parse --is-shallow-repository 2> /dev/null)" = "true" ]; then
+          git fetch --quiet --tags --unshallow || git fetch --quiet --tags
+        fi
+        if ! [[ "$VERSION" =~ $SEMVER_RE ]]; then
+          echo "::error::'$VERSION' is not a semantic version"
+          exit 1
+        fi
+        FILE_VERSION=$(tr -d '[:space:]' < "$VERSION_FILE")
+        if [ "$FILE_VERSION" != "$VERSION" ]; then
+          echo "::error::$VERSION_FILE contains '$FILE_VERSION' at this commit, but version '$VERSION' was requested"
+          exit 1
+        fi
+
+        TAG="${TAG_PREFIX}${VERSION}"
+        SHA="${INPUT_SHA:-$(git rev-parse HEAD)}"
+        MAJOR="${VERSION%%.*}"
+        ALIAS="${TAG_PREFIX}${MAJOR}"
+        PRERELEASE=false
+        if [[ "$VERSION" == *-* ]]; then PRERELEASE=true; fi
+
+        if git rev-parse -q --verify "refs/tags/$TAG" > /dev/null; then
+          echo "::error::Tag $TAG already exists - bump the version instead of re-releasing it"
+          exit 1
+        fi
+
+        # newest stable release overall / within this major (before the new tag exists)
+        HIGH_ALL=""
+        HIGH_MAJOR=""
+        while read -r T; do
+          if [ -z "$T" ]; then continue; fi
+          V="${T#"$TAG_PREFIX"}"
+          if ! [[ "$V" =~ $SEMVER_RE ]]; then continue; fi
+          if [[ "$V" == *-* ]]; then continue; fi
+          if [ -z "$HIGH_ALL" ] || [ "$(semver_cmp "$V" "$HIGH_ALL")" = "1" ]; then HIGH_ALL="$V"; fi
+          if [ "${V%%.*}" = "$MAJOR" ]; then
+            if [ -z "$HIGH_MAJOR" ] || [ "$(semver_cmp "$V" "$HIGH_MAJOR")" = "1" ]; then HIGH_MAJOR="$V"; fi
+          fi
+        done < <(git tag --list "${TAG_PREFIX}*")
+
+        IS_LATEST=false
+        IS_MAJOR_NEWEST=false
+        if [ "$PRERELEASE" = "false" ]; then
+          if [ -z "$HIGH_ALL" ]   || [ "$(semver_cmp "$VERSION" "$HIGH_ALL")" = "1" ];   then IS_LATEST=true; fi
+          if [ -z "$HIGH_MAJOR" ] || [ "$(semver_cmp "$VERSION" "$HIGH_MAJOR")" = "1" ]; then IS_MAJOR_NEWEST=true; fi
+        fi
+
+        ARGS=(--target "$SHA" --title "$TAG" --generate-notes)
+        if [ -n "$NOTES" ]; then ARGS+=(--notes "$NOTES"); fi
+        if [ "$PRERELEASE" = "true" ]; then
+          ARGS+=(--prerelease --latest=false)
+        elif [ "$IS_LATEST" = "true" ]; then
+          ARGS+=(--latest)
+        else
+          ARGS+=(--latest=false)
+        fi
+
+        echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+        if [ "$DRY_RUN" = "true" ]; then
+          echo "🧪 dry run: would run: gh release create $TAG ${ARGS[*]}"
+          if [ "$UPDATE_MAJOR" = "true" ] && [ "$IS_MAJOR_NEWEST" = "true" ]; then echo "🧪 dry run: would point $ALIAS at $SHA"; fi
+          echo "released=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        gh release create "$TAG" "${ARGS[@]}"
+        URL=$(gh release view "$TAG" --json url --jq .url)
+        echo "url=$URL" >> "$GITHUB_OUTPUT"
+        echo "released=true" >> "$GITHUB_OUTPUT"
+        echo "🚀 Released $TAG -> $URL"
+
+        if [ "$UPDATE_MAJOR" = "true" ]; then
+          if [ "$IS_MAJOR_NEWEST" = "true" ]; then
+            if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${ALIAS}" > /dev/null 2>&1; then
+              gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${ALIAS}" -f sha="$SHA" -F force=true > /dev/null
+            else
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" -f ref="refs/tags/${ALIAS}" -f sha="$SHA" > /dev/null
+            fi
+            echo "🔖 $ALIAS now points at $SHA"
+          else
+            echo "ℹ️  $ALIAS not moved: $TAG is not the newest stable ${MAJOR}.x release"
+          fi
+        fi
+
+        {
+          echo "### Released \`$TAG\`"
+          echo ""
+          echo "$URL"
+          if [ "$UPDATE_MAJOR" = "true" ] && [ "$IS_MAJOR_NEWEST" = "true" ]; then echo ""; echo "Alias \`$ALIAS\` → \`$TAG\`"; fi
+        } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

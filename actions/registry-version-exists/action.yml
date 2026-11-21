@@ -1,0 +1,83 @@
+name: Registry version exists
+description: >-
+  Checks whether an exact version of a package is already published, so a re-run can finish
+  without trying to upload it again. Supports pub.dev, npm, PyPI, crates.io, RubyGems,
+  Maven Central and WordPress.org.
+author: KMM-ZONE
+
+inputs:
+  registry:
+    description: "pub | npm | pypi | crates | rubygems | maven-central | wordpress"
+    required: true
+  name:
+    description: "Package name (Maven: artifactId, WordPress: plugin slug)"
+    required: true
+  version:
+    description: "Exact version to look for"
+    required: true
+  group:
+    description: "Maven groupId (maven-central only)"
+    required: false
+    default: ""
+  registry-url:
+    description: "Base URL of the registry (empty = the public default; PyPI: https://test.pypi.org for TestPyPI)"
+    required: false
+    default: ""
+  auth-token:
+    description: "Token for private npm registries"
+    required: false
+    default: ""
+
+outputs:
+  exists:
+    description: "'true' when the version is already published"
+    value: ${{ steps.check.outputs.exists }}
+
+runs:
+  using: composite
+  steps:
+    - name: Look up the version
+      id: check
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry }}
+        NAME: ${{ inputs.name }}
+        VERSION: ${{ inputs.version }}
+        GROUP: ${{ inputs.group }}
+        BASE_URL: ${{ inputs.registry-url }}
+        NODE_AUTH_TOKEN: ${{ inputs.auth-token }}
+      run: |
+        UA="open-flows (+https://kmm.zone; ${GITHUB_REPOSITORY:-local})"
+        is_200() { # is_200 [curl args] URL
+          local CODE
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' -L -A "$UA" "$@")
+          [ "$CODE" = "200" ]
+        }
+        EXISTS=false
+        case "$REGISTRY" in
+          pub)
+            if is_200 "${BASE_URL:-https://pub.dev}/api/packages/${NAME}/versions/${VERSION}"; then EXISTS=true; fi ;;
+          pypi)
+            if is_200 "${BASE_URL:-https://pypi.org}/pypi/${NAME}/${VERSION}/json"; then EXISTS=true; fi ;;
+          crates)
+            if is_200 "${BASE_URL:-https://crates.io}/api/v1/crates/${NAME}/${VERSION}"; then EXISTS=true; fi ;;
+          rubygems)
+            if is_200 "${BASE_URL:-https://rubygems.org}/api/v2/rubygems/${NAME}/versions/${VERSION}.json"; then EXISTS=true; fi ;;
+          maven-central)
+            if [ -z "$GROUP" ]; then
+              echo "::error::'group' is required for maven-central"
+              exit 1
+            fi
+            if is_200 -I "${BASE_URL:-https://repo1.maven.org/maven2}/${GROUP//.//}/${NAME}/${VERSION}/${NAME}-${VERSION}.pom"; then EXISTS=true; fi ;;
+          npm)
+            if npm view "${NAME}@${VERSION}" version --registry "${BASE_URL:-https://registry.npmjs.org}" > /dev/null 2>&1; then EXISTS=true; fi ;;
+          wordpress)
+            if svn ls "${BASE_URL:-https://plugins.svn.wordpress.org}/${NAME}/tags/${VERSION}/" > /dev/null 2>&1; then EXISTS=true; fi ;;
+          *)
+            echo "::error::Unsupported registry '$REGISTRY'"
+            exit 1 ;;
+        esac
+        echo "exists=$EXISTS" >> "$GITHUB_OUTPUT"
+        if [ "$EXISTS" = "true" ]; then
+          echo "::notice::${NAME} ${VERSION} is already published on ${REGISTRY} - nothing to do"
+        fi

@@ -1,0 +1,191 @@
+# Deploy a plugin to the WordPress.org Plugin Repository (SVN) with 10up/action-wordpress-plugin-deploy.
+# Secrets: SVN_USERNAME / SVN_PASSWORD of a WordPress.org account that has commit access to the plugin.
+# Prerequisite: the plugin must already be approved on WordPress.org (the SVN repo has to exist).
+name: Publish WordPress Plugin (WordPress.org)
+
+on:
+  workflow_call:
+    inputs:
+      slug:
+        description: "Plugin slug on WordPress.org (empty = repository name)"
+        type: string
+        default: ""
+      plugin_file:
+        description: "Main plugin file holding the 'Version:' header (empty = <slug>.php)"
+        type: string
+        default: ""
+      build_command:
+        description: "Optional build command run before deploying (e.g. 'composer install --no-dev && npm ci && npm run build')"
+        type: string
+        default: ""
+      node_version:
+        description: "Node.js version (only set up when build_command is not empty)"
+        type: string
+        default: "24"
+      php_version:
+        description: "PHP version (only set up when build_command is not empty)"
+        type: string
+        default: "8.3"
+      assets_dir:
+        description: "Directory with wordpress.org assets (banners, icons, screenshots)"
+        type: string
+        default: ".wordpress-org"
+      generate_zip:
+        description: "Also build a plugin zip and keep it as a workflow artifact"
+        type: boolean
+        default: true
+      verify_tag:
+        description: "On tag pushes, fail unless the tag equals tag_prefix + the plugin version"
+        type: boolean
+        default: true
+      tag_prefix:
+        description: "Tag prefix used when verifying the tag"
+        type: string
+        default: "v"
+      skip_if_published:
+        description: "Exit successfully when this version already exists in the plugin's SVN tags"
+        type: boolean
+        default: true
+      dry_run:
+        description: "Run the deploy action in DRY_RUN mode (nothing is committed to SVN)"
+        type: boolean
+        default: false
+    secrets:
+      SVN_USERNAME:
+        description: "WordPress.org username"
+        required: false
+      SVN_PASSWORD:
+        description: "WordPress.org password"
+        required: false
+    outputs:
+      version:
+        description: "Plugin version from the plugin header"
+        value: ${{ jobs.deploy.outputs.version }}
+      published:
+        description: "'true' when this run committed the release to SVN"
+        value: ${{ jobs.deploy.outputs.published }}
+
+jobs:
+  deploy:
+    name: Deploy to WordPress.org
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      published: ${{ steps.result.outputs.published }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check credentials
+        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.0
+        with:
+          enabled: ${{ !inputs.dry_run }}
+          secrets: |
+            SVN_USERNAME=${{ secrets.SVN_USERNAME }}
+            SVN_PASSWORD=${{ secrets.SVN_PASSWORD }}
+
+      - name: Read plugin header and readme
+        id: meta
+        env:
+          SLUG_INPUT: ${{ inputs.slug }}
+          PLUGIN_FILE_INPUT: ${{ inputs.plugin_file }}
+        run: |
+          SLUG="${SLUG_INPUT:-${GITHUB_REPOSITORY#*/}}"
+          PLUGIN_FILE="${PLUGIN_FILE_INPUT:-${SLUG}.php}"
+          if [ ! -f "$PLUGIN_FILE" ]; then
+            echo "::error::Main plugin file '$PLUGIN_FILE' not found - set the 'plugin_file' (and 'slug') inputs"
+            exit 1
+          fi
+          if [ ! -f readme.txt ]; then
+            echo "::error::readme.txt is required by WordPress.org and was not found in the repository root"
+            exit 1
+          fi
+          trim() { sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]+$//' | tr -d '\r'; }
+          VERSION=$(grep -iE '^[[:space:]*#@]*Version:' "$PLUGIN_FILE" | head -1 | trim)
+          STABLE=$(grep -iE '^Stable tag:' readme.txt | head -1 | trim)
+          if [ -z "$VERSION" ]; then
+            echo "::error::No 'Version:' header found in $PLUGIN_FILE"
+            exit 1
+          fi
+          if [ "$STABLE" != "$VERSION" ]; then
+            echo "::error::readme.txt 'Stable tag' is '${STABLE:-missing}' but the plugin header Version is '$VERSION'. They must match."
+            exit 1
+          fi
+          {
+            echo "slug=$SLUG"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
+          echo "📦 $SLUG $VERSION"
+
+      - name: Verify tag matches plugin version
+        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.0
+        with:
+          version: ${{ steps.meta.outputs.version }}
+          tag-prefix: ${{ inputs.tag_prefix }}
+          enabled: ${{ inputs.verify_tag }}
+
+      - name: Check whether this version is already tagged on WordPress.org
+        id: exists
+        if: ${{ inputs.skip_if_published }}
+        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.0.0
+        with:
+          registry: wordpress
+          name: ${{ steps.meta.outputs.slug }}
+          version: ${{ steps.meta.outputs.version }}
+
+      - name: Set up PHP (build)
+        if: ${{ inputs.build_command != '' && steps.exists.outputs.exists != 'true' }}
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962  # 2.40.0
+        with:
+          php-version: ${{ inputs.php_version }}
+          coverage: none
+          tools: composer:v2
+
+      - name: Set up Node.js (build)
+        if: ${{ inputs.build_command != '' && steps.exists.outputs.exists != 'true' }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Build
+        if: ${{ inputs.build_command != '' && steps.exists.outputs.exists != 'true' }}
+        env:
+          BUILD_COMMAND: ${{ inputs.build_command }}
+        run: bash -c "$BUILD_COMMAND"
+
+      - name: Deploy to WordPress.org
+        id: deploy
+        if: ${{ steps.exists.outputs.exists != 'true' }}
+        uses: 10up/action-wordpress-plugin-deploy@54bd289b8525fd23a5c365ec369185f2966529c2  # 2.3.0
+        env:
+          SVN_USERNAME: ${{ secrets.SVN_USERNAME || 'dry-run' }}
+          SVN_PASSWORD: ${{ secrets.SVN_PASSWORD || 'dry-run' }}
+          SLUG: ${{ steps.meta.outputs.slug }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          ASSETS_DIR: ${{ inputs.assets_dir }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        with:
+          generate-zip: ${{ inputs.generate_zip }}
+
+      - name: Upload plugin zip
+        if: ${{ inputs.generate_zip && steps.deploy.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.meta.outputs.slug }}-${{ steps.meta.outputs.version }}
+          path: ${{ steps.deploy.outputs.zip-path }}
+          if-no-files-found: error
+
+      - name: Set result
+        id: result
+        if: ${{ always() }}
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        with:
+          outcomes: ${{ inputs.dry_run && 'skipped' || steps.deploy.outcome }}

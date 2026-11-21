@@ -1,0 +1,271 @@
+# Release a Unity package (UPM) - test it, pack it, and publish it to npm and/or NuGet, plus a GitHub Release.
+# The Unity Asset Store has NO public upload API: this workflow produces the .tgz that you upload by hand
+# in the Asset Store Publisher Portal (see README). OpenUPM needs no CI at all (it builds from your git tags).
+name: Publish Unity Package (npm / NuGet / GitHub Release)
+
+on:
+  workflow_call:
+    inputs:
+      package_path:
+        description: "Folder containing the UPM package.json (e.g. . or Packages/com.company.pkg)"
+        type: string
+        default: "."
+      project_path:
+        description: "Unity project used to run tests (a test project that references the package)"
+        type: string
+        default: "."
+      unity_version:
+        description: "Unity version, or 'auto' to read ProjectSettings/ProjectVersion.txt"
+        type: string
+        default: "auto"
+      lfs:
+        description: "Fetch Git LFS files"
+        type: boolean
+        default: false
+      run_tests:
+        description: "Run Unity tests with game-ci (needs the UNITY_* secrets)"
+        type: boolean
+        default: false
+      test_mode:
+        description: "editmode | playmode | all"
+        type: string
+        default: "all"
+      publish_npm:
+        description: "Publish the UPM package to an npm registry (scoped registry for the Unity Package Manager)"
+        type: boolean
+        default: false
+      npm_registry:
+        description: "npm registry URL"
+        type: string
+        default: "https://registry.npmjs.org"
+      npm_access:
+        description: "npm access: public | restricted"
+        type: string
+        default: "public"
+      publish_nuget:
+        description: "Pack nuget_project and push it to NuGet"
+        type: boolean
+        default: false
+      nuget_project:
+        description: "Path to the .csproj to pack for NuGet (required when publish_nuget is true)"
+        type: string
+        default: ""
+      nuget_source:
+        description: "NuGet push source URL"
+        type: string
+        default: "https://api.nuget.org/v3/index.json"
+      dotnet_version:
+        description: ".NET SDK used for NuGet packing"
+        type: string
+        default: "9.0.x"
+      github_release:
+        description: "Create a GitHub Release and attach the .tgz (and .nupkg)"
+        type: boolean
+        default: true
+      verify_tag:
+        description: "On tag pushes, fail unless the tag equals tag_prefix + the package.json version"
+        type: boolean
+        default: true
+      tag_prefix:
+        description: "Tag prefix used when verifying the tag"
+        type: string
+        default: "v"
+      dry_run:
+        description: "Test and pack only; nothing is published or released"
+        type: boolean
+        default: false
+    secrets:
+      UNITY_LICENSE:
+        description: "Contents of the Unity .ulf license file (personal license) - for run_tests"
+        required: false
+      UNITY_EMAIL:
+        description: "Unity account email - for run_tests"
+        required: false
+      UNITY_PASSWORD:
+        description: "Unity account password - for run_tests"
+        required: false
+      UNITY_SERIAL:
+        description: "Unity serial (Plus/Pro license) - for run_tests"
+        required: false
+      NPM_TOKEN:
+        description: "npm access token (needed when publish_npm is true)"
+        required: false
+      NUGET_API_KEY:
+        description: "NuGet API key (needed when publish_nuget is true)"
+        required: false
+    outputs:
+      version:
+        description: "Package version read from package.json"
+        value: ${{ jobs.publish.outputs.version }}
+      published:
+        description: "'true' when something was pushed to npm/NuGet or a release was created"
+        value: ${{ jobs.publish.outputs.published }}
+
+jobs:
+  publish:
+    name: Release Unity package
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write  # create the GitHub Release
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      published: ${{ steps.result.outputs.published }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          lfs: ${{ inputs.lfs }}
+          persist-credentials: false
+
+      - name: Read package.json
+        id: meta
+        uses: KMM-ZONE/open-flows/actions/read-npm-package@v1.0.0
+        with:
+          directory: ${{ inputs.package_path }}
+          fail-if-private: "false"
+
+      - name: Verify tag matches package version
+        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.0
+        with:
+          version: ${{ steps.meta.outputs.version }}
+          tag-prefix: ${{ inputs.tag_prefix }}
+          enabled: ${{ inputs.verify_tag }}
+
+      - name: Check npm credentials
+        if: ${{ inputs.publish_npm }}
+        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.0
+        with:
+          enabled: ${{ !inputs.dry_run }}
+          secrets: |
+            NPM_TOKEN=${{ secrets.NPM_TOKEN }}
+
+      - name: Check NuGet credentials
+        if: ${{ inputs.publish_nuget }}
+        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.0
+        with:
+          enabled: ${{ !inputs.dry_run }}
+          secrets: |
+            NUGET_API_KEY=${{ secrets.NUGET_API_KEY }}
+
+      - name: Check NuGet project
+        if: ${{ inputs.publish_nuget && !inputs.dry_run }}
+        env:
+          NUGET_PROJECT: ${{ inputs.nuget_project }}
+        run: |
+          if [ -z "$NUGET_PROJECT" ]; then
+            echo "::error::publish_nuget is true but nuget_project is empty"
+            exit 1
+          fi
+
+      - name: Run Unity tests
+        if: ${{ inputs.run_tests }}
+        uses: game-ci/unity-test-runner@32e57712352b500e17974b245a6dce9e11a73213  # v4.4.0
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+          UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
+        with:
+          projectPath: ${{ inputs.project_path }}
+          unityVersion: ${{ inputs.unity_version }}
+          testMode: ${{ inputs.test_mode }}
+
+      - name: Pack UPM tarball
+        id: pack
+        working-directory: ${{ inputs.package_path }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/upm"
+          npm pack --pack-destination "$RUNNER_TEMP/upm"
+          TGZS=("$RUNNER_TEMP"/upm/*.tgz)
+          TGZ="${TGZS[0]}"
+          echo "tgz=$TGZ" >> "$GITHUB_OUTPUT"
+          echo "📦 $TGZ"
+          tar -tzf "$TGZ" | head -20
+
+      - name: Set up Node.js (npm registry auth)
+        if: ${{ inputs.publish_npm && !inputs.dry_run }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: ${{ inputs.npm_registry }}
+
+      - name: Check whether this version is already on npm
+        id: npm_exists
+        if: ${{ inputs.publish_npm && !inputs.dry_run }}
+        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.0.0
+        with:
+          registry: npm
+          name: ${{ steps.meta.outputs.name }}
+          version: ${{ steps.meta.outputs.version }}
+          registry-url: ${{ inputs.npm_registry }}
+          auth-token: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish to npm
+        id: npm
+        if: ${{ inputs.publish_npm && !inputs.dry_run && steps.npm_exists.outputs.exists != 'true' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DIST_TAG: ${{ steps.meta.outputs.dist-tag }}
+          ACCESS: ${{ inputs.npm_access }}
+          TGZ: ${{ steps.pack.outputs.tgz }}
+        run: npm publish "$TGZ" --access "$ACCESS" --tag "$DIST_TAG"
+
+      - name: Set up .NET
+        if: ${{ inputs.publish_nuget || (inputs.dry_run && inputs.nuget_project != '') }}
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: Pack NuGet package
+        id: nupack
+        if: ${{ inputs.publish_nuget || (inputs.dry_run && inputs.nuget_project != '') }}
+        env:
+          NUGET_PROJECT: ${{ inputs.nuget_project }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          dotnet pack "$NUGET_PROJECT" --configuration Release -p:Version="$VERSION" --output "$RUNNER_TEMP/nupkgs"
+          ls -1 "$RUNNER_TEMP/nupkgs"
+
+      - name: Push to NuGet
+        id: nuget
+        if: ${{ inputs.publish_nuget && !inputs.dry_run }}
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          SOURCE: ${{ inputs.nuget_source }}
+        run: |
+          dotnet nuget push "$RUNNER_TEMP/nupkgs/*.nupkg" --api-key "$NUGET_API_KEY" --source "$SOURCE" --skip-duplicate
+
+      - name: Create GitHub Release
+        id: release
+        if: ${{ !inputs.dry_run && inputs.github_release && github.ref_type == 'tag' }}
+        uses: KMM-ZONE/open-flows/actions/github-release@v1.0.0
+        with:
+          tag: ${{ github.ref_name }}
+          version: ${{ steps.meta.outputs.version }}
+          assets: ${{ steps.pack.outputs.tgz }}
+          optional-assets: ${{ runner.temp }}/nupkgs/*.nupkg
+
+      - name: Upload tarball as workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: unity-package
+          path: ${{ steps.pack.outputs.tgz }}
+          if-no-files-found: error
+
+      - name: Asset Store reminder
+        run: |
+          {
+            echo "### Unity Asset Store"
+            echo "The Asset Store has no upload API. Download the \`unity-package\` artifact (or the release asset) and upload it in the Publisher Portal."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set result
+        id: result
+        if: ${{ always() }}
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        with:
+          outcomes: ${{ steps.npm.outcome }} ${{ steps.nuget.outcome }} ${{ steps.release.outcome }}

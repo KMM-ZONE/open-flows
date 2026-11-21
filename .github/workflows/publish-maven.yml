@@ -1,0 +1,187 @@
+# Deploy a Maven project to Maven Central through the Central Publisher Portal
+# (central-publishing-maven-plugin) - or to any other Maven repository.
+# Secrets: MAVEN_CENTRAL_USERNAME / MAVEN_CENTRAL_PASSWORD (Central Portal user token),
+#          GPG_PRIVATE_KEY (armored private key) and GPG_PASSPHRASE.
+# Your pom.xml needs the release profile described in the README (sources, javadoc, gpg, publishing plugin).
+name: Publish Maven Package (Maven Central)
+
+on:
+  workflow_call:
+    inputs:
+      java_version:
+        description: "JDK version"
+        type: string
+        default: "17"
+      java_distribution:
+        description: "JDK distribution (temurin, zulu, corretto, ...)"
+        type: string
+        default: "temurin"
+      working_directory:
+        description: "Directory containing pom.xml"
+        type: string
+        default: "."
+      profiles:
+        description: "Maven profile(s) activated for the deploy, comma separated (empty = none)"
+        type: string
+        default: "release"
+      server_id:
+        description: "<server><id> in settings.xml that receives the credentials (must match your pom)"
+        type: string
+        default: "central"
+      run_tests:
+        description: "Run `mvn verify` before deploying (the deploy itself then skips tests)"
+        type: boolean
+        default: true
+      maven_args:
+        description: "Extra arguments appended to the deploy command"
+        type: string
+        default: ""
+      verify_tag:
+        description: "On tag pushes, fail unless the tag equals tag_prefix + the project version"
+        type: boolean
+        default: true
+      tag_prefix:
+        description: "Tag prefix used when verifying the tag"
+        type: string
+        default: "v"
+      skip_if_published:
+        description: "Exit successfully when this version is already on Maven Central"
+        type: boolean
+        default: true
+      dry_run:
+        description: "Run `mvn verify` with signing disabled, but do not deploy"
+        type: boolean
+        default: false
+    secrets:
+      MAVEN_CENTRAL_USERNAME:
+        description: "Central Portal user token - username part"
+        required: false
+      MAVEN_CENTRAL_PASSWORD:
+        description: "Central Portal user token - password part"
+        required: false
+      GPG_PRIVATE_KEY:
+        description: "ASCII-armored GPG private key used to sign artifacts"
+        required: false
+      GPG_PASSPHRASE:
+        description: "Passphrase of the GPG key"
+        required: false
+    outputs:
+      version:
+        description: "Project version read from the pom"
+        value: ${{ jobs.publish.outputs.version }}
+      published:
+        description: "'true' when this run deployed the artifacts"
+        value: ${{ jobs.publish.outputs.published }}
+
+jobs:
+  publish:
+    name: Deploy to Maven Central
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      published: ${{ steps.result.outputs.published }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK and Maven settings
+        uses: actions/setup-java@v6
+        with:
+          java-version: ${{ inputs.java_version }}
+          distribution: ${{ inputs.java_distribution }}
+          cache: maven
+          server-id: ${{ inputs.server_id }}
+          server-username: MAVEN_USERNAME
+          server-password: MAVEN_PASSWORD
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+
+      - name: Check credentials
+        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.0
+        with:
+          enabled: ${{ !inputs.dry_run }}
+          secrets: |
+            MAVEN_CENTRAL_USERNAME=${{ secrets.MAVEN_CENTRAL_USERNAME }}
+            MAVEN_CENTRAL_PASSWORD=${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+            GPG_PRIVATE_KEY=${{ secrets.GPG_PRIVATE_KEY }}
+            GPG_PASSPHRASE=${{ secrets.GPG_PASSPHRASE }}
+
+      - name: Read project coordinates
+        id: meta
+        run: |
+          eval_expr() { mvn -q -B -ntp help:evaluate -Dexpression="$1" -DforceStdout; }
+          GROUP=$(eval_expr project.groupId)
+          ARTIFACT=$(eval_expr project.artifactId)
+          VERSION=$(eval_expr project.version)
+          {
+            echo "group=$GROUP"
+            echo "artifact=$ARTIFACT"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
+          echo "📦 $GROUP:$ARTIFACT:$VERSION"
+
+      - name: Verify tag matches project version
+        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.0
+        with:
+          version: ${{ steps.meta.outputs.version }}
+          tag-prefix: ${{ inputs.tag_prefix }}
+          enabled: ${{ inputs.verify_tag }}
+
+      - name: Refuse SNAPSHOT versions
+        if: ${{ !inputs.dry_run }}
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          case "$VERSION" in
+            *-SNAPSHOT) echo "::error::$VERSION is a SNAPSHOT; Maven Central does not accept snapshots through this workflow"; exit 1 ;;
+          esac
+
+      - name: Check whether this version is already on Maven Central
+        id: exists
+        if: ${{ inputs.skip_if_published }}
+        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.0.0
+        with:
+          registry: maven-central
+          name: ${{ steps.meta.outputs.artifact }}
+          version: ${{ steps.meta.outputs.version }}
+          group: ${{ steps.meta.outputs.group }}
+
+      - name: Verify (build + tests)
+        if: ${{ (inputs.run_tests || inputs.dry_run) && steps.exists.outputs.exists != 'true' }}
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          EXTRA=()
+          if [ "$DRY_RUN" = "true" ]; then EXTRA+=(-Dgpg.skip=true); fi
+          mvn -B -ntp verify "${EXTRA[@]}"
+
+      - name: Deploy
+        id: publish
+        if: ${{ !inputs.dry_run && steps.exists.outputs.exists != 'true' }}
+        env:
+          MAVEN_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          PROFILES: ${{ inputs.profiles }}
+          MAVEN_ARGS_EXTRA: ${{ inputs.maven_args }}
+        run: |
+          ARGS=(-B -ntp -DskipTests)
+          if [ -n "$PROFILES" ]; then ARGS+=("-P$PROFILES"); fi
+          read -ra EXTRA <<< "$MAVEN_ARGS_EXTRA"
+          mvn "${ARGS[@]}" "${EXTRA[@]}" deploy
+
+      - name: Set result
+        id: result
+        if: ${{ always() }}
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        with:
+          outcomes: ${{ steps.publish.outcome }}

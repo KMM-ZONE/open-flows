@@ -1,0 +1,53 @@
+name: Read Python distribution
+description: >-
+  Reads name and version from the built sdist (or wheel), so static and dynamic versions
+  (setuptools_scm, hatch-vcs, ...) are both handled.
+author: KMM-ZONE
+
+inputs:
+  directory:
+    description: "Project folder (the one that contains dist/)"
+    required: false
+    default: "."
+  dist-directory:
+    description: "Folder with the built distributions, relative to directory"
+    required: false
+    default: "dist"
+
+outputs:
+  name:
+    description: "Distribution name"
+    value: ${{ steps.read.outputs.name }}
+  version:
+    description: "Distribution version (normalised, PEP 440)"
+    value: ${{ steps.read.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Read metadata
+      id: read
+      shell: bash
+      working-directory: ${{ inputs.directory }}
+      env:
+        DIST_DIR: ${{ inputs.dist-directory }}
+      run: |
+        python3 - <<'PY' >> "$GITHUB_OUTPUT"
+        import email, glob, os, sys, tarfile, zipfile
+        d = os.environ["DIST_DIR"]
+        sdists = sorted(glob.glob(os.path.join(d, "*.tar.gz")))
+        wheels = sorted(glob.glob(os.path.join(d, "*.whl")))
+        if sdists:
+            with tarfile.open(sdists[0]) as t:
+                member = next(m for m in t.getmembers()
+                              if m.name.count("/") == 1 and m.name.endswith("/PKG-INFO"))
+                meta = email.message_from_binary_file(t.extractfile(member))
+        elif wheels:
+            with zipfile.ZipFile(wheels[0]) as z:
+                name = next(n for n in z.namelist() if n.endswith(".dist-info/METADATA"))
+                meta = email.message_from_binary_file(z.open(name))
+        else:
+            sys.exit("No distributions found in " + d)
+        print("name=" + meta["Name"])
+        print("version=" + meta["Version"])
+        PY

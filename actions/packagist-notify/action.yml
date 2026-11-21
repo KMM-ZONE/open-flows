@@ -1,0 +1,54 @@
+name: Notify Packagist
+description: Asks Packagist to re-crawl a repository so a new git tag shows up immediately.
+author: KMM-ZONE
+
+inputs:
+  username:
+    description: "Packagist username"
+    required: false
+    default: ""
+  token:
+    description: "Packagist API token"
+    required: false
+    default: ""
+  package-url:
+    description: "Repository URL registered on Packagist (empty = this repository on GitHub)"
+    required: false
+    default: ""
+
+outputs:
+  notified:
+    description: "'true' when Packagist accepted the update request"
+    value: ${{ steps.notify.outputs.notified }}
+
+runs:
+  using: composite
+  steps:
+    - name: Update package
+      id: notify
+      shell: bash
+      env:
+        PACKAGIST_USERNAME: ${{ inputs.username }}
+        PACKAGIST_API_TOKEN: ${{ inputs.token }}
+        PACKAGE_URL_INPUT: ${{ inputs.package-url }}
+        PACKAGIST_API_URL: https://packagist.org
+      run: |
+        if [ -z "$PACKAGIST_USERNAME" ] || [ -z "$PACKAGIST_API_TOKEN" ]; then
+          echo "::notice::Packagist credentials not provided - relying on the Packagist GitHub hook to pick up the tag"
+          echo "notified=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        PACKAGE_URL="${PACKAGE_URL_INPUT:-https://github.com/${GITHUB_REPOSITORY}}"
+        RESPONSE="${RUNNER_TEMP:-/tmp}/packagist-response.json"
+        CODE=$(curl -sS -o "$RESPONSE" -w '%{http_code}' -X POST \
+          -H 'Content-Type: application/json' \
+          "${PACKAGIST_API_URL}/api/update-package?username=${PACKAGIST_USERNAME}&apiToken=${PACKAGIST_API_TOKEN}" \
+          -d "{\"repository\":{\"url\":\"${PACKAGE_URL}\"}}")
+        cat "$RESPONSE"; echo
+        case "$CODE" in
+          2??) echo "✅ Packagist accepted the update request (HTTP $CODE)" ;;
+          *)   echo "::error::Packagist returned HTTP $CODE - check the credentials and that the package exists on Packagist"
+               echo "notified=false" >> "$GITHUB_OUTPUT"
+               exit 1 ;;
+        esac
+        echo "notified=true" >> "$GITHUB_OUTPUT"

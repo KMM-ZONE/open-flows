@@ -1,0 +1,191 @@
+# Publish a Java / Kotlin / Android / Kotlin-Multiplatform library with Gradle.
+# Default task: publishAndReleaseToMavenCentral (com.vanniktech.maven.publish plugin).
+# For Gradle Plugin Portal projects set publish_task: publishPlugins and pass GRADLE_PUBLISH_KEY / GRADLE_PUBLISH_SECRET.
+name: Publish Gradle Package (Maven Central / Plugin Portal)
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: "Runner label. Kotlin Multiplatform libraries with Apple targets need macos-latest"
+        type: string
+        default: "ubuntu-latest"
+      java_version:
+        description: "JDK version"
+        type: string
+        default: "17"
+      java_distribution:
+        description: "JDK distribution"
+        type: string
+        default: "temurin"
+      working_directory:
+        description: "Directory containing gradlew"
+        type: string
+        default: "."
+      project_path:
+        description: "Gradle project path used to read the version, e.g. ':library' (empty = root project)"
+        type: string
+        default: ""
+      run_tests:
+        description: "Run the test task before publishing"
+        type: boolean
+        default: true
+      test_task:
+        description: "Gradle task that builds and tests"
+        type: string
+        default: "check"
+      publish_task:
+        description: "Gradle task that publishes (publishAndReleaseToMavenCentral | publishToMavenCentral | publishPlugins | publish)"
+        type: string
+        default: "publishAndReleaseToMavenCentral"
+      dry_run_task:
+        description: "Task run instead of publish_task when dry_run is true"
+        type: string
+        default: "publishToMavenLocal"
+      gradle_args:
+        description: "Extra arguments for the publish command"
+        type: string
+        default: ""
+      verify_tag:
+        description: "On tag pushes, fail unless the tag equals tag_prefix + the Gradle project version"
+        type: boolean
+        default: true
+      tag_prefix:
+        description: "Tag prefix used when verifying the tag"
+        type: string
+        default: "v"
+      dry_run:
+        description: "Run dry_run_task instead of publishing"
+        type: boolean
+        default: false
+    secrets:
+      MAVEN_CENTRAL_USERNAME:
+        description: "Central Portal user token - username part (mavenCentralUsername)"
+        required: false
+      MAVEN_CENTRAL_PASSWORD:
+        description: "Central Portal user token - password part (mavenCentralPassword)"
+        required: false
+      SIGNING_KEY:
+        description: "ASCII-armored GPG private key (signingInMemoryKey)"
+        required: false
+      SIGNING_KEY_ID:
+        description: "Short key id of the signing key (signingInMemoryKeyId) - optional"
+        required: false
+      SIGNING_PASSWORD:
+        description: "Passphrase of the signing key (signingInMemoryKeyPassword)"
+        required: false
+      GRADLE_PUBLISH_KEY:
+        description: "Gradle Plugin Portal key (only for publishPlugins)"
+        required: false
+      GRADLE_PUBLISH_SECRET:
+        description: "Gradle Plugin Portal secret (only for publishPlugins)"
+        required: false
+    outputs:
+      version:
+        description: "Gradle project version"
+        value: ${{ jobs.publish.outputs.version }}
+      published:
+        description: "'true' when this run executed the publish task"
+        value: ${{ jobs.publish.outputs.published }}
+
+jobs:
+  publish:
+    name: Publish with Gradle
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      published: ${{ steps.result.outputs.published }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK
+        uses: actions/setup-java@v6
+        with:
+          java-version: ${{ inputs.java_version }}
+          distribution: ${{ inputs.java_distribution }}
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c  # v6.4.1
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Check credentials
+        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.0
+        with:
+          enabled: ${{ !inputs.dry_run }}
+          mode: any
+          secrets: |
+            MAVEN_CENTRAL_USERNAME=${{ secrets.MAVEN_CENTRAL_USERNAME }}
+            GRADLE_PUBLISH_KEY=${{ secrets.GRADLE_PUBLISH_KEY }}
+
+      - name: Read project version
+        id: meta
+        env:
+          PROJECT_PATH: ${{ inputs.project_path }}
+        run: |
+          VERSION=$(./gradlew -q "${PROJECT_PATH}:properties" 2>/dev/null | sed -n 's/^version: //p' | head -1)
+          if [ -z "$VERSION" ] || [ "$VERSION" = "unspecified" ]; then
+            echo "::error::Could not read a version from Gradle (got '${VERSION:-nothing}'). Set 'version' in build.gradle(.kts) or gradle.properties."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "📦 version $VERSION"
+
+      - name: Verify tag matches project version
+        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.0
+        with:
+          version: ${{ steps.meta.outputs.version }}
+          tag-prefix: ${{ inputs.tag_prefix }}
+          enabled: ${{ inputs.verify_tag }}
+
+      - name: Build and test
+        if: ${{ inputs.run_tests }}
+        env:
+          TEST_TASK: ${{ inputs.test_task }}
+        run: |
+          read -ra TASKS <<< "$TEST_TASK"
+          ./gradlew "${TASKS[@]}"
+
+      - name: Publish (dry run)
+        if: ${{ inputs.dry_run }}
+        env:
+          DRY_RUN_TASK: ${{ inputs.dry_run_task }}
+        run: |
+          read -ra TASKS <<< "$DRY_RUN_TASK"
+          ./gradlew "${TASKS[@]}"
+
+      - name: Publish
+        id: publish
+        if: ${{ !inputs.dry_run }}
+        env:
+          PUBLISH_TASK: ${{ inputs.publish_task }}
+          GRADLE_ARGS: ${{ inputs.gradle_args }}
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.SIGNING_KEY_ID }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
+          GRADLE_PUBLISH_KEY: ${{ secrets.GRADLE_PUBLISH_KEY }}
+          GRADLE_PUBLISH_SECRET: ${{ secrets.GRADLE_PUBLISH_SECRET }}
+        run: |
+          read -ra TASKS <<< "$PUBLISH_TASK"
+          read -ra EXTRA <<< "$GRADLE_ARGS"
+          ./gradlew "${TASKS[@]}" "${EXTRA[@]}"
+
+      - name: Set result
+        id: result
+        if: ${{ always() }}
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        with:
+          outcomes: ${{ steps.publish.outcome }}

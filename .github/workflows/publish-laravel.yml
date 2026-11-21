@@ -1,0 +1,182 @@
+# Test a Laravel package against a PHP x Laravel matrix (Orchestra Testbench), then publish it to Packagist.
+# Same secrets and behaviour as publish-composer.yml; the matrix is the difference.
+name: Publish Laravel Package (Packagist)
+
+on:
+  workflow_call:
+    inputs:
+      matrix:
+        description: 'JSON array of {"php","laravel","testbench"} combinations to test'
+        type: string
+        default: '[{"php":"8.3","laravel":"11.*","testbench":"9.*"},{"php":"8.4","laravel":"12.*","testbench":"10.*"}]'
+      php_extensions:
+        description: "Comma separated PHP extensions for setup-php"
+        type: string
+        default: "dom, curl, libxml, mbstring, zip, pcntl, pdo, sqlite, pdo_sqlite, bcmath, intl, gd, exif, iconv"
+      publish_php_version:
+        description: "PHP version for the publish job"
+        type: string
+        default: "8.4"
+      working_directory:
+        description: "Directory containing composer.json"
+        type: string
+        default: "."
+      run_tests:
+        description: "Run the matrix tests"
+        type: boolean
+        default: true
+      test_command:
+        description: "Test command. Empty = vendor/bin/pest if present, else vendor/bin/phpunit"
+        type: string
+        default: ""
+      package_url:
+        description: "Repository URL registered on Packagist (empty = this repository on GitHub)"
+        type: string
+        default: ""
+      verify_tag:
+        description: "On tag pushes, fail unless the tag is a semantic version (tag_prefix + MAJOR.MINOR.PATCH[-pre])"
+        type: boolean
+        default: true
+      tag_prefix:
+        description: "Optional tag prefix, e.g. v"
+        type: string
+        default: "v"
+      dry_run:
+        description: "Validate and test only; do not notify Packagist"
+        type: boolean
+        default: false
+    secrets:
+      PACKAGIST_USERNAME:
+        description: "Packagist username"
+        required: false
+      PACKAGIST_API_TOKEN:
+        description: "Packagist API token (packagist.org -> Profile -> Show API Token)"
+        required: false
+    outputs:
+      version:
+        description: "Version taken from the tag (empty when not run on a tag)"
+        value: ${{ jobs.publish.outputs.version }}
+      published:
+        description: "'true' when Packagist accepted the update request"
+        value: ${{ jobs.publish.outputs.published }}
+
+jobs:
+  test:
+    name: Test (PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }})
+    if: ${{ inputs.run_tests }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP ${{ matrix.php }}
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962  # 2.40.0
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: ${{ inputs.php_extensions }}
+          coverage: none
+          tools: composer:v2
+
+      - name: Install Laravel ${{ matrix.laravel }} and Testbench ${{ matrix.testbench }}
+        env:
+          LARAVEL: ${{ matrix.laravel }}
+          TESTBENCH: ${{ matrix.testbench }}
+        run: |
+          composer require "laravel/framework:${LARAVEL}" "orchestra/testbench:${TESTBENCH}" --no-interaction --no-update
+          composer update --prefer-stable --prefer-dist --no-interaction --no-progress
+
+      - name: Test
+        env:
+          TEST_COMMAND: ${{ inputs.test_command }}
+        run: |
+          if [ -n "$TEST_COMMAND" ]; then
+            bash -c "$TEST_COMMAND"
+          elif [ -x vendor/bin/pest ]; then
+            vendor/bin/pest
+          elif [ -x vendor/bin/phpunit ]; then
+            vendor/bin/phpunit
+          else
+            echo "::error::No test runner found (vendor/bin/pest or vendor/bin/phpunit). Set test_command."
+            exit 1
+          fi
+
+  publish:
+    name: Publish to Packagist
+    needs: test
+    # run when the matrix passed or was skipped (run_tests: false), never after a failure
+    if: ${{ !cancelled() && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      published: ${{ steps.result.outputs.published }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962  # 2.40.0
+        with:
+          php-version: ${{ inputs.publish_php_version }}
+          coverage: none
+          tools: composer:v2
+
+      - name: Validate tag
+        id: meta
+        env:
+          TAG_PREFIX: ${{ inputs.tag_prefix }}
+          VERIFY_TAG: ${{ inputs.verify_tag }}
+        run: |
+          VERSION=""
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#"$TAG_PREFIX"}"
+            SEMVER_RE='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+            if [ "$VERIFY_TAG" = "true" ] && ! [[ "$VERSION" =~ $SEMVER_RE ]]; then
+              echo "::error::Tag '$GITHUB_REF_NAME' is not a semantic version (expected '${TAG_PREFIX}1.2.3')"
+              exit 1
+            fi
+            echo "📦 version $VERSION"
+          else
+            echo "::notice::Not running on a tag - Packagist will be asked to re-crawl, but no version is derived"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Validate composer.json
+        run: composer validate --strict
+
+      - name: Notify Packagist
+        id: publish
+        if: ${{ !inputs.dry_run }}
+        uses: KMM-ZONE/open-flows/actions/packagist-notify@v1.0.0
+        with:
+          username: ${{ secrets.PACKAGIST_USERNAME }}
+          token: ${{ secrets.PACKAGIST_API_TOKEN }}
+          package-url: ${{ inputs.package_url }}
+
+      - name: Set result
+        id: result
+        if: ${{ always() }}
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        with:
+          outcomes: ${{ steps.publish.outputs.notified == 'true' && 'success' || 'skipped' }}

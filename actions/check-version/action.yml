@@ -1,0 +1,166 @@
+name: Check version
+description: >-
+  Reads a plain VERSION file and compares it with the newest semver tag.
+  bumped=true means the version is higher than every tag (safe to release).
+author: KMM-ZONE
+
+inputs:
+  version-file:
+    description: "Plain-text version file (MAJOR.MINOR.PATCH[-prerelease], no leading v)"
+    required: false
+    default: "VERSION"
+  tag-prefix:
+    description: "Prefix of release tags (v -> v1.2.3)"
+    required: false
+    default: "v"
+  require-bump:
+    description: "Fail when the version is not bumped (use as a pull-request gate)"
+    required: false
+    default: "false"
+
+outputs:
+  version:
+    description: "Version read from the version file"
+    value: ${{ steps.check.outputs.version }}
+  tag:
+    description: "Tag a release of this version would use (tag-prefix + version)"
+    value: ${{ steps.check.outputs.tag }}
+  latest-version:
+    description: "Highest existing semver tag without the prefix (empty when there is none)"
+    value: ${{ steps.check.outputs.latest-version }}
+  bumped:
+    description: "'true' when the version is higher than the latest tag"
+    value: ${{ steps.check.outputs.bumped }}
+  prerelease:
+    description: "'true' when the version has a pre-release part"
+    value: ${{ steps.check.outputs.prerelease }}
+  reason:
+    description: "first-release | bumped | same-version | lower-version | tag-exists"
+    value: ${{ steps.check.outputs.reason }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compare the version file with the latest tag
+      id: check
+      shell: bash
+      env:
+        VERSION_FILE: ${{ inputs.version-file }}
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
+        REQUIRE_BUMP: ${{ inputs.require-bump }}
+      run: |
+        export LC_ALL=C
+        SEMVER_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+
+        # >>> semver_cmp
+        # prints -1, 0 or 1 for "$1 <=> $2" using SemVer 2.0.0 precedence (build metadata ignored)
+        semver_cmp() {
+          local a="${1%%+*}" b="${2%%+*}"
+          local a_core="${a%%-*}" b_core="${b%%-*}"
+          local a_pre="" b_pre=""
+          if [[ "$a" == *-* ]]; then a_pre="${a#*-}"; fi
+          if [[ "$b" == *-* ]]; then b_pre="${b#*-}"; fi
+          local IFS=.
+          local -a ac bc ap bp
+          read -ra ac <<< "$a_core"
+          read -ra bc <<< "$b_core"
+          local i
+          for i in 0 1 2; do
+            if (( 10#${ac[i]} > 10#${bc[i]} )); then echo 1; return; fi
+            if (( 10#${ac[i]} < 10#${bc[i]} )); then echo -1; return; fi
+          done
+          if [ -z "$a_pre" ] && [ -z "$b_pre" ]; then echo 0; return; fi
+          if [ -z "$a_pre" ]; then echo 1; return; fi
+          if [ -z "$b_pre" ]; then echo -1; return; fi
+          read -ra ap <<< "$a_pre"
+          read -ra bp <<< "$b_pre"
+          local n=${#ap[@]}
+          if (( ${#bp[@]} > n )); then n=${#bp[@]}; fi
+          local x y
+          for (( i = 0; i < n; i++ )); do
+            x="${ap[i]-}"
+            y="${bp[i]-}"
+            if [ -z "$x" ]; then echo -1; return; fi
+            if [ -z "$y" ]; then echo 1; return; fi
+            if [[ "$x" =~ ^[0-9]+$ ]] && [[ "$y" =~ ^[0-9]+$ ]]; then
+              if (( 10#$x > 10#$y )); then echo 1; return; fi
+              if (( 10#$x < 10#$y )); then echo -1; return; fi
+            elif [[ "$x" =~ ^[0-9]+$ ]]; then
+              echo -1; return
+            elif [[ "$y" =~ ^[0-9]+$ ]]; then
+              echo 1; return
+            else
+              if [[ "$x" > "$y" ]]; then echo 1; return; fi
+              if [[ "$x" < "$y" ]]; then echo -1; return; fi
+            fi
+          done
+          echo 0
+        }
+        # <<< semver_cmp
+
+        if [ "$(git rev-parse --is-shallow-repository 2> /dev/null)" = "true" ]; then
+          git fetch --quiet --tags --unshallow || git fetch --quiet --tags
+        fi
+        if [ ! -f "$VERSION_FILE" ]; then
+          echo "::error::Version file '$VERSION_FILE' not found"
+          exit 1
+        fi
+        VERSION=$(tr -d '[:space:]' < "$VERSION_FILE")
+        if ! [[ "$VERSION" =~ $SEMVER_RE ]]; then
+          echo "::error::'$VERSION' in $VERSION_FILE is not a plain semantic version. Expected MAJOR.MINOR.PATCH[-prerelease] (e.g. 1.2.3) without a leading 'v'."
+          exit 1
+        fi
+        TAG="${TAG_PREFIX}${VERSION}"
+
+        LATEST=""
+        while read -r T; do
+          if [ -z "$T" ]; then continue; fi
+          V="${T#"$TAG_PREFIX"}"
+          if [[ "$V" =~ $SEMVER_RE ]]; then
+            if [ -z "$LATEST" ] || [ "$(semver_cmp "$V" "$LATEST")" = "1" ]; then LATEST="$V"; fi
+          fi
+        done < <(git tag --list "${TAG_PREFIX}*")
+
+        if git rev-parse -q --verify "refs/tags/$TAG" > /dev/null; then
+          BUMPED=false; REASON="tag-exists"
+        elif [ -z "$LATEST" ]; then
+          BUMPED=true; REASON="first-release"
+        else
+          case "$(semver_cmp "$VERSION" "$LATEST")" in
+            1)  BUMPED=true;  REASON="bumped" ;;
+            0)  BUMPED=false; REASON="same-version" ;;
+            *)  BUMPED=false; REASON="lower-version" ;;
+          esac
+        fi
+
+        PRERELEASE=false
+        if [[ "$VERSION" == *-* ]]; then PRERELEASE=true; fi
+
+        {
+          echo "version=$VERSION"
+          echo "tag=$TAG"
+          echo "latest-version=$LATEST"
+          echo "bumped=$BUMPED"
+          echo "prerelease=$PRERELEASE"
+          echo "reason=$REASON"
+        } >> "$GITHUB_OUTPUT"
+
+        {
+          echo "### Version check"
+          echo ""
+          echo "| | |"
+          echo "|---|---|"
+          echo "| \`$VERSION_FILE\` | \`$VERSION\` |"
+          echo "| Latest tag | ${LATEST:+\`$TAG_PREFIX$LATEST\`}${LATEST:-none} |"
+          echo "| Bumped | **$BUMPED** ($REASON) |"
+        } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+
+        case "$REASON" in
+          bumped|first-release) echo "✅ $VERSION is ready to release (latest tag: ${LATEST:-none})" ;;
+          *)                    echo "⏭️  Nothing to release: $REASON (version $VERSION, latest tag ${LATEST:-none})" ;;
+        esac
+
+        if [ "$REQUIRE_BUMP" = "true" ] && [ "$BUMPED" != "true" ]; then
+          echo "::error::Version not bumped ($REASON). Raise the number in $VERSION_FILE (latest tag: ${LATEST:-none})."
+          exit 1
+        fi

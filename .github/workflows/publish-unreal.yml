@@ -1,0 +1,196 @@
+# Package an Unreal Engine plugin with RunUAT BuildPlugin and attach the zip to a GitHub Release.
+# IMPORTANT: GitHub-hosted runners cannot hold an Unreal Engine install, so this workflow targets a
+# SELF-HOSTED runner that already has the engine (set engine_path). Fab has no public upload API:
+# the produced zip is what you upload by hand in the Fab Publisher Portal (see README).
+name: Publish Unreal Engine Plugin (GitHub Release / Fab-ready zip)
+
+on:
+  workflow_call:
+    inputs:
+      runner_labels:
+        description: 'JSON array of runner labels, e.g. ["self-hosted","windows","unreal"]'
+        type: string
+        default: '["self-hosted"]'
+      engine_path:
+        description: "Unreal Engine root on the runner (the folder that contains Engine/), e.g. C:/Program Files/Epic Games/UE_5.6"
+        type: string
+        required: true
+      engine_version:
+        description: "Engine version label used in the zip name, e.g. 5.6"
+        type: string
+        default: ""
+      uplugin:
+        description: "Path to the .uplugin relative to the repo root (empty = the first .uplugin found)"
+        type: string
+        default: ""
+      target_platforms:
+        description: "BuildPlugin -TargetPlatforms value, '+' separated (e.g. Win64+Linux)"
+        type: string
+        default: "Win64"
+      extra_args:
+        description: "Extra arguments appended to the BuildPlugin command"
+        type: string
+        default: ""
+      lfs:
+        description: "Fetch Git LFS files"
+        type: boolean
+        default: false
+      verify_tag:
+        description: "On tag pushes, fail unless the tag equals tag_prefix + the .uplugin VersionName"
+        type: boolean
+        default: true
+      tag_prefix:
+        description: "Tag prefix used when verifying the tag"
+        type: string
+        default: "v"
+      github_release:
+        description: "Attach the zip to the GitHub Release of the tag (needs the gh CLI on the runner)"
+        type: boolean
+        default: true
+      dry_run:
+        description: "Build and zip, but do not touch the GitHub Release"
+        type: boolean
+        default: false
+    outputs:
+      version:
+        description: "Plugin VersionName from the .uplugin"
+        value: ${{ jobs.package.outputs.version }}
+      published:
+        description: "'true' when the zip was attached to a GitHub Release"
+        value: ${{ jobs.package.outputs.published }}
+
+jobs:
+  package:
+    name: Package plugin
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    timeout-minutes: 180
+    permissions:
+      contents: write  # attach the zip to the GitHub Release
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      published: ${{ steps.result.outputs.published }}
+    defaults:
+      run:
+        shell: bash  # Git Bash on Windows runners
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          lfs: ${{ inputs.lfs }}
+          persist-credentials: false
+
+      - name: Read .uplugin
+        id: meta
+        env:
+          UPLUGIN_INPUT: ${{ inputs.uplugin }}
+        run: |
+          UPLUGIN="$UPLUGIN_INPUT"
+          if [ -z "$UPLUGIN" ]; then
+            UPLUGIN=$(find . -maxdepth 3 -name '*.uplugin' -not -path './Build/*' | head -1)
+            UPLUGIN="${UPLUGIN#./}"
+          fi
+          if [ -z "$UPLUGIN" ] || [ ! -f "$UPLUGIN" ]; then
+            echo "::error::No .uplugin found - set the 'uplugin' input"
+            exit 1
+          fi
+          NAME=$(basename "$UPLUGIN" .uplugin)
+          VERSION=$(jq -r '.VersionName // empty' "$UPLUGIN")
+          if [ -z "$VERSION" ]; then
+            echo "::error::$UPLUGIN has no \"VersionName\""
+            exit 1
+          fi
+          {
+            echo "uplugin=$UPLUGIN"
+            echo "name=$NAME"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
+          echo "📦 $NAME $VERSION"
+
+      - name: Verify tag matches plugin version
+        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.0
+        with:
+          version: ${{ steps.meta.outputs.version }}
+          tag-prefix: ${{ inputs.tag_prefix }}
+          enabled: ${{ inputs.verify_tag }}
+
+      - name: Build plugin with RunUAT
+        env:
+          ENGINE_PATH: ${{ inputs.engine_path }}
+          UPLUGIN: ${{ steps.meta.outputs.uplugin }}
+          NAME: ${{ steps.meta.outputs.name }}
+          PLATFORMS: ${{ inputs.target_platforms }}
+          EXTRA_ARGS: ${{ inputs.extra_args }}
+        run: |
+          ENGINE="${ENGINE_PATH//\\//}"
+          WS="${GITHUB_WORKSPACE//\\//}"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            UAT="$ENGINE/Engine/Build/BatchFiles/RunUAT.bat"
+          else
+            UAT="$ENGINE/Engine/Build/BatchFiles/RunUAT.sh"
+          fi
+          if [ ! -f "$UAT" ]; then
+            echo "::error::RunUAT not found at '$UAT'. Check engine_path on this runner."
+            exit 1
+          fi
+          read -ra EXTRA <<< "$EXTRA_ARGS"
+          "$UAT" BuildPlugin -Plugin="$WS/$UPLUGIN" -Package="$WS/Build/$NAME" -TargetPlatforms="$PLATFORMS" "${EXTRA[@]}"
+
+      - name: Name the archive
+        id: archive
+        env:
+          NAME: ${{ steps.meta.outputs.name }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          ENGINE_VERSION: ${{ inputs.engine_version }}
+        run: |
+          ZIP="${NAME}-${VERSION}"
+          if [ -n "$ENGINE_VERSION" ]; then ZIP="${ZIP}-UE${ENGINE_VERSION}"; fi
+          ZIP="${ZIP}-${RUNNER_OS}.zip"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+
+      - name: Zip plugin (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        env:
+          NAME: ${{ steps.meta.outputs.name }}
+          ZIP: ${{ steps.archive.outputs.zip }}
+        run: |
+          Compress-Archive -Path "Build/$env:NAME" -DestinationPath "Build/$env:ZIP" -Force
+
+      - name: Zip plugin (macOS / Linux)
+        if: ${{ runner.os != 'Windows' }}
+        env:
+          NAME: ${{ steps.meta.outputs.name }}
+          ZIP: ${{ steps.archive.outputs.zip }}
+        run: |
+          cd Build || exit 1
+          zip -r "$ZIP" "$NAME"
+
+      - name: Upload zip as workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.archive.outputs.zip }}
+          path: Build/${{ steps.archive.outputs.zip }}
+          if-no-files-found: error
+
+      - name: Attach zip to the GitHub Release
+        id: release
+        if: ${{ !inputs.dry_run && inputs.github_release && github.ref_type == 'tag' }}
+        uses: KMM-ZONE/open-flows/actions/github-release@v1.0.0
+        with:
+          tag: ${{ github.ref_name }}
+          version: ${{ steps.meta.outputs.version }}
+          assets: Build/${{ steps.archive.outputs.zip }}
+
+      - name: Fab reminder
+        run: |
+          {
+            echo "### Fab"
+            echo "Fab has no upload API. Upload \`${{ steps.archive.outputs.zip }}\` in the Fab Publisher Portal (one build per engine version)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set result
+        id: result
+        if: ${{ always() }}
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        with:
+          outcomes: ${{ steps.release.outcome }}

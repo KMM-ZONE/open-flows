@@ -1,0 +1,30 @@
+name: Set published output
+description: >-
+  Sets published=true when any of the given step outcomes is success.
+  Call it with an always() condition so it also runs after failures.
+author: KMM-ZONE
+
+inputs:
+  outcomes:
+    description: "Step outcomes (success/failure/skipped/cancelled), separated by spaces or new lines"
+    required: true
+
+outputs:
+  published:
+    description: "'true' when at least one outcome was 'success'"
+    value: ${{ steps.result.outputs.published }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compute published
+      id: result
+      shell: bash
+      env:
+        OUTCOMES: ${{ inputs.outcomes }}
+      run: |
+        PUBLISHED=false
+        for ONE in $OUTCOMES; do
+          if [ "$ONE" = "success" ]; then PUBLISHED=true; fi
+        done
+        echo "published=$PUBLISHED" >> "$GITHUB_OUTPUT"

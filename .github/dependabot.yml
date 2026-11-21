@@ -1,0 +1,25 @@
+# Keeps every third-party `uses:` reference on its latest release.
+#   * actions/*       -> latest major tag (actions/checkout@v7)
+#   * other actions   -> commit SHA + "# vX.Y.Z" comment (Dependabot rewrites both)
+#
+# References to this repository's own actions (KMM-ZONE/open-flows/actions/*) are NOT managed by
+# Dependabot: scripts/update-version.sh keeps them equal to the VERSION file, and the release
+# pipeline refuses to publish when they differ.
+#
+# Merging a Dependabot PR does not release anything by itself: bump VERSION (patch) with
+# scripts/update-version.sh when you want the update published - see "Releasing this repository" in the README.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 10
+    ignore:
+      - dependency-name: "KMM-ZONE/open-flows"
+      - dependency-name: "KMM-ZONE/open-flows/*"
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(deps)"

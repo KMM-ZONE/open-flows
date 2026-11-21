@@ -1,0 +1,13 @@
+# yamllint configuration for GitHub Actions workflows and composite actions
+extends: default
+
+rules:
+  # run: blocks contain shell scripts and long ${{ }} expressions
+  line-length: disable
+  # GitHub Actions files do not start with ---
+  document-start: disable
+  # `on:` is a normal key in workflows, not a boolean
+  truthy:
+    check-keys: false
+  comments:
+    min-spaces-from-content: 2

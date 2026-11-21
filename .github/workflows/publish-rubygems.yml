@@ -1,0 +1,164 @@
+# Test, build and push a Ruby gem to RubyGems.org (or a compatible host).
+# Auth: RUBYGEMS_API_KEY secret (API key with the "Push rubygem" scope).
+name: Publish Ruby Gem (RubyGems)
+
+on:
+  workflow_call:
+    inputs:
+      ruby_version:
+        description: "Ruby version"
+        type: string
+        default: "3.4"
+      working_directory:
+        description: "Directory containing the gemspec"
+        type: string
+        default: "."
+      gemspec:
+        description: "Gemspec file name (empty = the single *.gemspec in working_directory)"
+        type: string
+        default: ""
+      run_tests:
+        description: "Run the test command"
+        type: boolean
+        default: true
+      test_command:
+        description: "Test command"
+        type: string
+        default: "bundle exec rake"
+      host:
+        description: "Gem host"
+        type: string
+        default: "https://rubygems.org"
+      verify_tag:
+        description: "On tag pushes, fail unless the tag equals tag_prefix + the gem version"
+        type: boolean
+        default: true
+      tag_prefix:
+        description: "Tag prefix used when verifying the tag"
+        type: string
+        default: "v"
+      skip_if_published:
+        description: "Exit successfully when this version already exists on RubyGems.org"
+        type: boolean
+        default: true
+      dry_run:
+        description: "Build the gem but do not push it"
+        type: boolean
+        default: false
+    secrets:
+      RUBYGEMS_API_KEY:
+        description: "RubyGems API key"
+        required: false
+    outputs:
+      version:
+        description: "Gem version read from the gemspec"
+        value: ${{ jobs.publish.outputs.version }}
+      published:
+        description: "'true' when this run pushed the gem"
+        value: ${{ jobs.publish.outputs.published }}
+
+jobs:
+  publish:
+    name: Publish to RubyGems
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      published: ${{ steps.result.outputs.published }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@be3c7df29b3349ec6bcfc6b4792f1cf9f5237d18  # v1.343.0
+        with:
+          ruby-version: ${{ inputs.ruby_version }}
+          bundler-cache: true
+          working-directory: ${{ inputs.working_directory }}
+
+      - name: Check credentials
+        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.0
+        with:
+          enabled: ${{ !inputs.dry_run }}
+          secrets: |
+            RUBYGEMS_API_KEY=${{ secrets.RUBYGEMS_API_KEY }}
+
+      - name: Read gemspec
+        id: meta
+        env:
+          GEMSPEC_INPUT: ${{ inputs.gemspec }}
+        run: |
+          GEMSPEC="$GEMSPEC_INPUT"
+          if [ -z "$GEMSPEC" ]; then
+            shopt -s nullglob
+            SPECS=(*.gemspec)
+            if [ "${#SPECS[@]}" -ne 1 ]; then
+              echo "::error::Expected exactly one *.gemspec in the working directory (found ${#SPECS[@]}). Set the 'gemspec' input."
+              exit 1
+            fi
+            GEMSPEC="${SPECS[0]}"
+          fi
+          read -r NAME VERSION < <(ruby -e 'spec = Gem::Specification.load(ARGV[0]); abort("could not load #{ARGV[0]}") unless spec; puts "#{spec.name} #{spec.version}"' "$GEMSPEC")
+          {
+            echo "gemspec=$GEMSPEC"
+            echo "name=$NAME"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
+          echo "📦 $NAME $VERSION"
+
+      - name: Verify tag matches gem version
+        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.0
+        with:
+          version: ${{ steps.meta.outputs.version }}
+          tag-prefix: ${{ inputs.tag_prefix }}
+          enabled: ${{ inputs.verify_tag }}
+
+      - name: Check whether this version is already on RubyGems
+        id: exists
+        if: ${{ inputs.skip_if_published }}
+        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.0.0
+        with:
+          registry: rubygems
+          name: ${{ steps.meta.outputs.name }}
+          version: ${{ steps.meta.outputs.version }}
+          registry-url: ${{ inputs.host }}
+
+      - name: Test
+        if: ${{ inputs.run_tests && steps.exists.outputs.exists != 'true' }}
+        env:
+          TEST_COMMAND: ${{ inputs.test_command }}
+        run: bash -c "$TEST_COMMAND"
+
+      - name: Build gem
+        id: build
+        if: ${{ steps.exists.outputs.exists != 'true' }}
+        env:
+          GEMSPEC: ${{ steps.meta.outputs.gemspec }}
+        run: |
+          gem build "$GEMSPEC"
+          ls -1 ./*.gem
+
+      - name: Push gem
+        id: publish
+        if: ${{ !inputs.dry_run && steps.exists.outputs.exists != 'true' }}
+        env:
+          GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
+          NAME: ${{ steps.meta.outputs.name }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          HOST: ${{ inputs.host }}
+        run: gem push "${NAME}-${VERSION}.gem" --host "$HOST"
+
+      - name: Set result
+        id: result
+        if: ${{ always() }}
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.0
+        with:
+          outcomes: ${{ steps.publish.outcome }}
