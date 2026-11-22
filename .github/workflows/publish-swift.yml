@@ -58,6 +58,10 @@ on:
         description: "Build and test only (podspec is linted, nothing is pushed or released)"
         type: boolean
         default: false
+      inform_new_version:
+        description: "Mention newer releases of these workflows in the job summary: none | major-only | major-minor-only | all"
+        type: string
+        default: "all"
     secrets:
       COCOAPODS_TRUNK_TOKEN:
         description: "CocoaPods trunk token (only needed when podspec is set)"
@@ -186,7 +190,7 @@ jobs:
       - name: Create GitHub Release
         id: release
         if: ${{ !inputs.dry_run && inputs.github_release }}
-        uses: KMM-ZONE/open-flows/actions/github-release@v1.0.1
+        uses: KMM-ZONE/open-flows/actions/github-release@v1.1.0
         with:
           tag: ${{ steps.meta.outputs.tag }}
           version: ${{ steps.meta.outputs.version }}
@@ -194,6 +198,13 @@ jobs:
       - name: Set result
         id: result
         if: ${{ always() }}
-        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.1
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.1.0
         with:
           outcomes: ${{ steps.pod.outcome }} ${{ steps.release.outcome }}
+
+      - name: New version notice
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: KMM-ZONE/open-flows/actions/new-version-notice@v1.1.0
+        with:
+          level: ${{ inputs.inform_new_version }}

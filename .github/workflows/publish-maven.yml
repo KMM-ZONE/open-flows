@@ -52,6 +52,10 @@ on:
         description: "Run `mvn verify` with signing disabled, but do not deploy"
         type: boolean
         default: false
+      inform_new_version:
+        description: "Mention newer releases of these workflows in the job summary: none | major-only | major-minor-only | all"
+        type: string
+        default: "all"
     secrets:
       MAVEN_CENTRAL_USERNAME:
         description: "Central Portal user token - username part"
@@ -106,7 +110,7 @@ jobs:
           gpg-passphrase: MAVEN_GPG_PASSPHRASE
 
       - name: Check credentials
-        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.1
+        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.1.0
         with:
           enabled: ${{ !inputs.dry_run }}
           secrets: |
@@ -130,7 +134,7 @@ jobs:
           echo "📦 $GROUP:$ARTIFACT:$VERSION"
 
       - name: Verify tag matches project version
-        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.1
+        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.1.0
         with:
           version: ${{ steps.meta.outputs.version }}
           tag-prefix: ${{ inputs.tag_prefix }}
@@ -148,7 +152,7 @@ jobs:
       - name: Check whether this version is already on Maven Central
         id: exists
         if: ${{ inputs.skip_if_published }}
-        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.0.1
+        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.1.0
         with:
           registry: maven-central
           name: ${{ steps.meta.outputs.artifact }}
@@ -182,6 +186,13 @@ jobs:
       - name: Set result
         id: result
         if: ${{ always() }}
-        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.1
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.1.0
         with:
           outcomes: ${{ steps.publish.outcome }}
+
+      - name: New version notice
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: KMM-ZONE/open-flows/actions/new-version-notice@v1.1.0
+        with:
+          level: ${{ inputs.inform_new_version }}

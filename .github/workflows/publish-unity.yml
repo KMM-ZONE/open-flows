@@ -74,6 +74,10 @@ on:
         description: "Test and pack only; nothing is published or released"
         type: boolean
         default: false
+      inform_new_version:
+        description: "Mention newer releases of these workflows in the job summary: none | major-only | major-minor-only | all"
+        type: string
+        default: "all"
     secrets:
       UNITY_LICENSE:
         description: "Contents of the Unity .ulf license file (personal license) - for run_tests"
@@ -123,13 +127,13 @@ jobs:
 
       - name: Read package.json
         id: meta
-        uses: KMM-ZONE/open-flows/actions/read-npm-package@v1.0.1
+        uses: KMM-ZONE/open-flows/actions/read-npm-package@v1.1.0
         with:
           directory: ${{ inputs.package_path }}
           fail-if-private: "false"
 
       - name: Verify tag matches package version
-        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.1
+        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.1.0
         with:
           version: ${{ steps.meta.outputs.version }}
           tag-prefix: ${{ inputs.tag_prefix }}
@@ -137,7 +141,7 @@ jobs:
 
       - name: Check npm credentials
         if: ${{ inputs.publish_npm }}
-        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.1
+        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.1.0
         with:
           enabled: ${{ !inputs.dry_run }}
           secrets: |
@@ -145,7 +149,7 @@ jobs:
 
       - name: Check NuGet credentials
         if: ${{ inputs.publish_nuget }}
-        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.0.1
+        uses: KMM-ZONE/open-flows/actions/require-secrets@v1.1.0
         with:
           enabled: ${{ !inputs.dry_run }}
           secrets: |
@@ -196,7 +200,7 @@ jobs:
       - name: Check whether this version is already on npm
         id: npm_exists
         if: ${{ inputs.publish_npm && !inputs.dry_run }}
-        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.0.1
+        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.1.0
         with:
           registry: npm
           name: ${{ steps.meta.outputs.name }}
@@ -242,7 +246,7 @@ jobs:
       - name: Create GitHub Release
         id: release
         if: ${{ !inputs.dry_run && inputs.github_release && github.ref_type == 'tag' }}
-        uses: KMM-ZONE/open-flows/actions/github-release@v1.0.1
+        uses: KMM-ZONE/open-flows/actions/github-release@v1.1.0
         with:
           tag: ${{ github.ref_name }}
           version: ${{ steps.meta.outputs.version }}
@@ -266,6 +270,13 @@ jobs:
       - name: Set result
         id: result
         if: ${{ always() }}
-        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.1
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.1.0
         with:
           outcomes: ${{ steps.npm.outcome }} ${{ steps.nuget.outcome }} ${{ steps.release.outcome }}
+
+      - name: New version notice
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: KMM-ZONE/open-flows/actions/new-version-notice@v1.1.0
+        with:
+          level: ${{ inputs.inform_new_version }}

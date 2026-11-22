@@ -11,3 +11,5 @@ rules:
     check-keys: false
   comments:
     min-spaces-from-content: 2
+  # a missing final newline is cosmetic and must never fail a build (editors add it via .editorconfig)
+  new-line-at-end-of-file: disable

@@ -1,0 +1,148 @@
+name: New version notice
+description: >-
+  Writes a short note to the job summary (never an annotation, never a failure) when a newer release of
+  KMM-ZONE/open-flows than the one this workflow runs is available. Run it as the last step of a workflow.
+author: KMM-ZONE
+
+inputs:
+  level:
+    description: >-
+      Which newer releases to mention: none, major-only, major-minor-only or all.
+      An unknown value behaves like all.
+    required: false
+    default: "all"
+  current-version:
+    description: "Version this workflow runs (empty = the tag this action was called with, e.g. v1.2.3)"
+    required: false
+    default: ""
+  source-url:
+    description: "Repository whose tags are checked for newer releases"
+    required: false
+    default: "https://github.com/KMM-ZONE/open-flows"
+
+runs:
+  using: composite
+  steps:
+    - name: Look for a newer release
+      shell: bash
+      env:
+        LEVEL: ${{ inputs.level }}
+        CURRENT_INPUT: ${{ inputs.current-version }}
+        SOURCE_URL: ${{ inputs.source-url }}
+        ACTION_REF: ${{ github.action_ref }}
+        ACTION_REPO: ${{ github.action_repository }}
+      run: |
+        export LC_ALL=C
+        SEMVER_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+
+        # >>> semver_cmp
+        # prints -1, 0 or 1 for "$1 <=> $2" using SemVer 2.0.0 precedence (build metadata ignored)
+        semver_cmp() {
+          local a="${1%%+*}" b="${2%%+*}"
+          local a_core="${a%%-*}" b_core="${b%%-*}"
+          local a_pre="" b_pre=""
+          if [[ "$a" == *-* ]]; then a_pre="${a#*-}"; fi
+          if [[ "$b" == *-* ]]; then b_pre="${b#*-}"; fi
+          local IFS=.
+          local -a ac bc ap bp
+          read -ra ac <<< "$a_core"
+          read -ra bc <<< "$b_core"
+          local i
+          for i in 0 1 2; do
+            if (( 10#${ac[i]} > 10#${bc[i]} )); then echo 1; return; fi
+            if (( 10#${ac[i]} < 10#${bc[i]} )); then echo -1; return; fi
+          done
+          if [ -z "$a_pre" ] && [ -z "$b_pre" ]; then echo 0; return; fi
+          if [ -z "$a_pre" ]; then echo 1; return; fi
+          if [ -z "$b_pre" ]; then echo -1; return; fi
+          read -ra ap <<< "$a_pre"
+          read -ra bp <<< "$b_pre"
+          local n=${#ap[@]}
+          if (( ${#bp[@]} > n )); then n=${#bp[@]}; fi
+          local x y
+          for (( i = 0; i < n; i++ )); do
+            x="${ap[i]-}"
+            y="${bp[i]-}"
+            if [ -z "$x" ]; then echo -1; return; fi
+            if [ -z "$y" ]; then echo 1; return; fi
+            if [[ "$x" =~ ^[0-9]+$ ]] && [[ "$y" =~ ^[0-9]+$ ]]; then
+              if (( 10#$x > 10#$y )); then echo 1; return; fi
+              if (( 10#$x < 10#$y )); then echo -1; return; fi
+            elif [[ "$x" =~ ^[0-9]+$ ]]; then
+              echo -1; return
+            elif [[ "$y" =~ ^[0-9]+$ ]]; then
+              echo 1; return
+            else
+              if [[ "$x" > "$y" ]]; then echo 1; return; fi
+              if [[ "$x" < "$y" ]]; then echo -1; return; fi
+            fi
+          done
+          echo 0
+        }
+        # <<< semver_cmp
+
+        # a notice must never break a run: any problem below simply ends the step quietly
+        trap 'exit 0' ERR
+
+        case "$LEVEL" in
+          none) exit 0 ;;
+          major-only|major-minor-only|all) ;;
+          *) LEVEL="all" ;;
+        esac
+
+        CURRENT="${CURRENT_INPUT:-$ACTION_REF}"
+        CURRENT="${CURRENT#v}"
+        if ! [[ "$CURRENT" =~ $SEMVER_RE ]]; then exit 0; fi   # called by SHA, branch or locally: version unknown
+
+        TAGS=$(git ls-remote --tags --refs "$SOURCE_URL" 2> /dev/null | sed -E 's#.*refs/tags/##') || exit 0
+        CUR_MAJOR="${CURRENT%%.*}"
+        REST="${CURRENT#*.}"; CUR_MINOR="${REST%%.*}"
+
+        SAME=""   # newest stable release inside the running major
+        TOP=""    # newest stable release of all
+        while IFS= read -r T; do
+          V="${T#v}"
+          if ! [[ "$V" =~ $SEMVER_RE ]]; then continue; fi
+          if [[ "$V" == *-* ]]; then continue; fi
+          if [ -z "$TOP" ] || [ "$(semver_cmp "$V" "$TOP")" = "1" ]; then TOP="$V"; fi
+          if [ "${V%%.*}" = "$CUR_MAJOR" ]; then
+            if [ -z "$SAME" ] || [ "$(semver_cmp "$V" "$SAME")" = "1" ]; then SAME="$V"; fi
+          fi
+        done <<< "$TAGS"
+
+        ROWS=""
+        if [ -n "$SAME" ] && [ "$(semver_cmp "$SAME" "$CURRENT")" = "1" ]; then
+          REST="${SAME#*.}"; MINOR="${REST%%.*}"
+          if [ "$MINOR" != "$CUR_MINOR" ]; then KIND="minor"; else KIND="patch"; fi
+          if [ "$LEVEL" = "all" ] || { [ "$LEVEL" = "major-minor-only" ] && [ "$KIND" = "minor" ]; }; then
+            ROWS+="| Newest in your major (v${CUR_MAJOR}) | v${SAME} | ${KIND} |"$'\n'
+            SAME_ROW=1
+          fi
+        fi
+        MAJOR_ROW=""
+        if [ -n "$TOP" ] && [ "${TOP%%.*}" -gt "$CUR_MAJOR" ]; then
+          ROWS+="| New major version | v${TOP} | major – may contain breaking changes |"$'\n'
+          MAJOR_ROW=1
+        fi
+        if [ -z "$ROWS" ]; then exit 0; fi
+
+        REPO="${ACTION_REPO:-KMM-ZONE/open-flows}"
+        {
+          echo "### ℹ️ Update available: ${REPO}"
+          echo ""
+          echo "This workflow runs **v${CURRENT}**."
+          echo ""
+          echo "| Update | Version | Kind |"
+          echo "| --- | --- | --- |"
+          printf '%s' "$ROWS"
+          echo ""
+          if [ -n "${SAME_ROW:-}" ]; then
+            echo "- Use the moving alias \`@v${CUR_MAJOR}\` in your \`uses:\` line to receive every ${CUR_MAJOR}.x release automatically, or pin the exact version."
+            echo "- Release notes: https://github.com/${REPO}/releases/tag/v${SAME}"
+          fi
+          if [ -n "$MAJOR_ROW" ]; then
+            echo "- Read the release notes first, then change \`@v${CUR_MAJOR}\` to \`@v${TOP%%.*}\`: https://github.com/${REPO}/releases/tag/v${TOP}"
+          fi
+          echo "- Not interested? Set \`inform_new_version\` to \`none\`, \`major-only\` or \`major-minor-only\` (default: \`all\`)."
+        } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+        echo "new-version-notice: a newer release is available (see the job summary)"

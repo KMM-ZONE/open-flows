@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Tests the semver_cmp function embedded in actions/check-version and actions/create-release:
-#   1. both copies must be identical
+# Tests the semver_cmp function embedded in actions/check-version, actions/create-release and actions/new-version-notice:
+#   1. all copies must be identical
 #   2. SemVer 2.0.0 precedence rules (https://semver.org/#spec-item-11)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -9,9 +9,11 @@ export LC_ALL=C
 extract() { sed -n '/# >>> semver_cmp/,/# <<< semver_cmp/p' "$1" | sed -E 's/^[[:space:]]+//'; }
 A=$(extract actions/check-version/action.yml)
 B=$(extract actions/create-release/action.yml)
-if [ -z "$A" ] || [ "$A" != "$B" ]; then
-  echo "❌ semver_cmp differs between actions/check-version and actions/create-release (or is missing)"
+C=$(extract actions/new-version-notice/action.yml)
+if [ -z "$A" ] || [ "$A" != "$B" ] || [ "$A" != "$C" ]; then
+  echo "❌ semver_cmp differs between actions/check-version, actions/create-release and actions/new-version-notice (or is missing)"
   diff <(echo "$A") <(echo "$B") || true
+  diff <(echo "$A") <(echo "$C") || true
   exit 1
 fi
 eval "$A"
@@ -45,5 +47,5 @@ check 1.0.0-A 1.0.0-a -1      # ASCII order
 check 1.0.0+build.5 1.0.0+build.9 0   # build metadata is ignored
 check 1.0.0-rc.1+x 1.0.0-rc.1 0
 
-if [ "$FAILED" = 0 ]; then echo "✅ semver_cmp: all checks passed (both copies identical)"; fi
+if [ "$FAILED" = 0 ]; then echo "✅ semver_cmp: all checks passed (all three copies identical)"; fi
 exit "$FAILED"

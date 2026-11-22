@@ -51,6 +51,10 @@ on:
         description: "Build and zip, but do not touch the GitHub Release"
         type: boolean
         default: false
+      inform_new_version:
+        description: "Mention newer releases of these workflows in the job summary: none | major-only | major-minor-only | all"
+        type: string
+        default: "all"
     outputs:
       version:
         description: "Plugin VersionName from the .uplugin"
@@ -107,7 +111,7 @@ jobs:
           echo "📦 $NAME $VERSION"
 
       - name: Verify tag matches plugin version
-        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.0.1
+        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.1.0
         with:
           version: ${{ steps.meta.outputs.version }}
           tag-prefix: ${{ inputs.tag_prefix }}
@@ -175,7 +179,7 @@ jobs:
       - name: Attach zip to the GitHub Release
         id: release
         if: ${{ !inputs.dry_run && inputs.github_release && github.ref_type == 'tag' }}
-        uses: KMM-ZONE/open-flows/actions/github-release@v1.0.1
+        uses: KMM-ZONE/open-flows/actions/github-release@v1.1.0
         with:
           tag: ${{ github.ref_name }}
           version: ${{ steps.meta.outputs.version }}
@@ -191,6 +195,13 @@ jobs:
       - name: Set result
         id: result
         if: ${{ always() }}
-        uses: KMM-ZONE/open-flows/actions/set-published@v1.0.1
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.1.0
         with:
           outcomes: ${{ steps.release.outcome }}
+
+      - name: New version notice
+        if: ${{ always() }}
+        continue-on-error: true
+        uses: KMM-ZONE/open-flows/actions/new-version-notice@v1.1.0
+        with:
+          level: ${{ inputs.inform_new_version }}

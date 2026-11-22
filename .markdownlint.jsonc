@@ -4,8 +4,18 @@
   // tables, code samples and long ${{ }} expressions make a line limit unhelpful
   "MD013": false,
   // <a id="..."></a> anchors give every section a stable link target
-  "MD033": { "allowed_elements": ["a"] },
+  "MD033": {
+    "allowed_elements": [
+      "a"
+    ]
+  },
   // "Secrets", "Caller workflow", "Inputs" ... repeat once per ecosystem, never as siblings
-  "MD024": { "siblings_only": true },
-  "MD004": { "style": "dash" }
+  "MD024": {
+    "siblings_only": true
+  },
+  "MD004": {
+    "style": "dash"
+  },
+  // a missing final newline is cosmetic and must never fail a build
+  "MD047": false
 }
