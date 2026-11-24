@@ -150,7 +150,7 @@ jobs:
       - name: Notify Packagist
         id: publish
         if: ${{ !inputs.dry_run }}
-        uses: KMM-ZONE/open-flows/actions/packagist-notify@v1.1.0
+        uses: KMM-ZONE/open-flows/actions/packagist-notify@v1.2.0
         with:
           username: ${{ secrets.PACKAGIST_USERNAME }}
           token: ${{ secrets.PACKAGIST_API_TOKEN }}
@@ -159,13 +159,13 @@ jobs:
       - name: Set result
         id: result
         if: ${{ always() }}
-        uses: KMM-ZONE/open-flows/actions/set-published@v1.1.0
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.2.0
         with:
           outcomes: ${{ steps.publish.outputs.notified == 'true' && 'success' || 'skipped' }}
 
       - name: New version notice
         if: ${{ always() }}
         continue-on-error: true
-        uses: KMM-ZONE/open-flows/actions/new-version-notice@v1.1.0
+        uses: KMM-ZONE/open-flows/actions/new-version-notice@v1.2.0
         with:
           level: ${{ inputs.inform_new_version }}

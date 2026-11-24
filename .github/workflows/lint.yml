@@ -32,6 +32,9 @@ jobs:
       - name: Lint workflows (actionlint + shellcheck)
         run: ./actionlint -color
 
+      - name: Shellcheck the scripts
+        run: shellcheck -S style scripts/*.sh
+
       - name: Lint YAML (yamllint)
         run: |
           python3 -m pip install --quiet yamllint

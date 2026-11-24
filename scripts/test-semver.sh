@@ -48,4 +48,42 @@ check 1.0.0+build.5 1.0.0+build.9 0   # build metadata is ignored
 check 1.0.0-rc.1+x 1.0.0-rc.1 0
 
 if [ "$FAILED" = 0 ]; then echo "✅ semver_cmp: all checks passed (all three copies identical)"; fi
+
+# ---------------------------------------------------------------------------------------------
+# read_version: the version-file reader embedded in actions/check-version and actions/create-release
+# ---------------------------------------------------------------------------------------------
+extract_rv() { sed -n '/# >>> read_version/,/# <<< read_version/p' "$1" | sed -E 's/^[[:space:]]+//'; }
+RA=$(extract_rv actions/check-version/action.yml)
+RB=$(extract_rv actions/create-release/action.yml)
+if [ -z "$RA" ] || [ "$RA" != "$RB" ]; then
+  echo "❌ read_version differs between actions/check-version and actions/create-release (or is missing)"
+  diff <(echo "$RA") <(echo "$RB") || true
+  exit 1
+fi
+eval "$RA"
+
+TMPD=$(mktemp -d); trap 'rm -rf "$TMPD"' EXIT
+rv_check() { # label file expected
+  local got; got=$(read_version "$2")
+  if [ "$got" != "$3" ]; then echo "❌ read_version $1 -> '$got' (expected '$3')"; FAILED=1; fi
+}
+printf '1.2.3\n' > "$TMPD/VERSION";                       rv_check "plain" "$TMPD/VERSION" "1.2.3"
+printf '  2.0.0-rc.1 \r\n\r\n' > "$TMPD/crlf.txt";          rv_check "plain with CRLF/space" "$TMPD/crlf.txt" "2.0.0-rc.1"
+printf 'name: tflite_core\nversion: 0.12.6+3 # build\ndependencies:\n  foo:\n    version: ^9.9.9\n' > "$TMPD/pubspec.yaml"
+rv_check "pubspec (build number, comment, nested version ignored)" "$TMPD/pubspec.yaml" "0.12.6+3"
+printf 'name: x\nversion: "1.0.0"\n' > "$TMPD/pubspec.yml";   rv_check "pubspec.yml (quoted)" "$TMPD/pubspec.yml" "1.0.0"
+mkdir -p "$TMPD/q"; printf "name: x\nversion: '4.5.6'\r\n" > "$TMPD/q/pubspec.yaml"
+rv_check "pubspec (single quotes, CRLF)" "$TMPD/q/pubspec.yaml" "4.5.6"
+printf '{\n  "name": "x",\n  "version": "3.0.0-beta.2",\n  "dependencies": { "version": "^1.0.0" }\n}\n' > "$TMPD/package.json"
+rv_check "package.json (pretty)" "$TMPD/package.json" "3.0.0-beta.2"
+mkdir -p "$TMPD/c"; printf '{"name":"x","version":"7.1.0"}' > "$TMPD/c/package.json"
+rv_check "package.json (compact)" "$TMPD/c/package.json" "7.1.0"
+# the same package.json cases without node on PATH (sed fallback)
+mkdir -p "$TMPD/bin"; for t in sed head tr cat; do ln -sf "$(command -v $t)" "$TMPD/bin/$t"; done
+OLDPATH="$PATH"; PATH="$TMPD/bin"
+rv_check "package.json (pretty, sed fallback)" "$TMPD/package.json" "3.0.0-beta.2"
+rv_check "package.json (compact, sed fallback)" "$TMPD/c/package.json" "7.1.0"
+PATH="$OLDPATH"
+
+if [ "$FAILED" = 0 ]; then echo "✅ read_version: all checks passed (both copies identical, node and sed paths)"; fi
 exit "$FAILED"

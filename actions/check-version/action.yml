@@ -6,7 +6,7 @@ author: KMM-ZONE
 
 inputs:
   version-file:
-    description: "Plain-text version file (MAJOR.MINOR.PATCH[-prerelease], no leading v)"
+    description: "Version file: plain text (MAJOR.MINOR.PATCH[-prerelease], no leading v), pubspec.yaml or package.json"
     required: false
     default: "VERSION"
   tag-prefix:
@@ -98,6 +98,24 @@ runs:
         }
         # <<< semver_cmp
 
+        # >>> read_version
+        # reads the version: a plain text file, pubspec.yaml / pubspec.yml (version:) or package.json ("version")
+        read_version() {
+          case "${1##*/}" in
+            pubspec.yaml|pubspec.yml)
+              sed -n 's/^version:[[:space:]]*//p' "$1" | head -1 | sed 's/[[:space:]]*#.*//' | tr -d "\"' \r" ;;
+            package.json)
+              if command -v node > /dev/null 2>&1; then
+                node -p "String(require(require('path').resolve(process.argv[1])).version || '')" "$1"
+              else
+                sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -1
+              fi ;;
+            *)
+              tr -d '[:space:]' < "$1" ;;
+          esac
+        }
+        # <<< read_version
+
         if [ "$(git rev-parse --is-shallow-repository 2> /dev/null)" = "true" ]; then
           git fetch --quiet --tags --unshallow || git fetch --quiet --tags
         fi
@@ -105,7 +123,7 @@ runs:
           echo "::error::Version file '$VERSION_FILE' not found"
           exit 1
         fi
-        VERSION=$(tr -d '[:space:]' < "$VERSION_FILE")
+        VERSION=$(read_version "$VERSION_FILE")
         if ! [[ "$VERSION" =~ $SEMVER_RE ]]; then
           echo "::error::'$VERSION' in $VERSION_FILE is not a plain semantic version. Expected MAJOR.MINOR.PATCH[-prerelease] (e.g. 1.2.3) without a leading 'v'."
           exit 1

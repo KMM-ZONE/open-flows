@@ -24,10 +24,10 @@ die() { echo "❌ $*" >&2; exit 1; }
 MODE=""; NEW=""; DRY=0; FORCE=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --v=*)      MODE=set; NEW="${1#--v=}" ;;
-    --v|-v)     MODE=set; shift; [ $# -gt 0 ] || die "--v needs a value"; NEW="$1" ;;
-    --check)    MODE=check ;;
-    --show)     MODE=show ;;
+    --v=*)      MODE="set"; NEW="${1#--v=}" ;;
+    --v|-v)     MODE="set"; shift; [ $# -gt 0 ] || die "--v needs a value"; NEW="$1" ;;
+    --check)    MODE="check" ;;
+    --show)     MODE="show" ;;
     --dry-run)  DRY=1 ;;
     --force)    FORCE=1 ;;
     -h|--help)  usage; exit 0 ;;

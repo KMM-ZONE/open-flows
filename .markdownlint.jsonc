@@ -3,10 +3,15 @@
   "default": true,
   // tables, code samples and long ${{ }} expressions make a line limit unhelpful
   "MD013": false,
-  // <a id="..."></a> anchors give every section a stable link target
+  // <a id="..."></a> anchors give every section a stable link target; the README header (centered logo,
+  // title and badges) needs <h1>, <p>, <img> and <br>, because Markdown cannot center anything
   "MD033": {
     "allowed_elements": [
-      "a"
+      "a",
+      "img",
+      "h1",
+      "p",
+      "br"
     ]
   },
   // "Secrets", "Caller workflow", "Inputs" ... repeat once per ecosystem, never as siblings

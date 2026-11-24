@@ -9,7 +9,7 @@ inputs:
     description: "Version to release, e.g. 1.2.3 (must equal the content of the version file at the commit)"
     required: true
   version-file:
-    description: "Plain-text version file"
+    description: "Version file: plain text, pubspec.yaml or package.json"
     required: false
     default: "VERSION"
   tag-prefix:
@@ -18,6 +18,10 @@ inputs:
     default: "v"
   sha:
     description: "Commit to tag (empty = the checked-out commit)"
+    required: false
+    default: ""
+  title:
+    description: "Release title (empty = the tag)"
     required: false
     default: ""
   notes:
@@ -61,6 +65,7 @@ runs:
         TAG_PREFIX: ${{ inputs.tag-prefix }}
         INPUT_SHA: ${{ inputs.sha }}
         NOTES: ${{ inputs.notes }}
+        RELEASE_TITLE: ${{ inputs.title }}
         UPDATE_MAJOR: ${{ inputs.update-major-tag }}
         DRY_RUN: ${{ inputs.dry-run }}
       run: |
@@ -113,6 +118,24 @@ runs:
         }
         # <<< semver_cmp
 
+        # >>> read_version
+        # reads the version: a plain text file, pubspec.yaml / pubspec.yml (version:) or package.json ("version")
+        read_version() {
+          case "${1##*/}" in
+            pubspec.yaml|pubspec.yml)
+              sed -n 's/^version:[[:space:]]*//p' "$1" | head -1 | sed 's/[[:space:]]*#.*//' | tr -d "\"' \r" ;;
+            package.json)
+              if command -v node > /dev/null 2>&1; then
+                node -p "String(require(require('path').resolve(process.argv[1])).version || '')" "$1"
+              else
+                sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -1
+              fi ;;
+            *)
+              tr -d '[:space:]' < "$1" ;;
+          esac
+        }
+        # <<< read_version
+
         if [ "$(git rev-parse --is-shallow-repository 2> /dev/null)" = "true" ]; then
           git fetch --quiet --tags --unshallow || git fetch --quiet --tags
         fi
@@ -120,7 +143,7 @@ runs:
           echo "::error::'$VERSION' is not a semantic version"
           exit 1
         fi
-        FILE_VERSION=$(tr -d '[:space:]' < "$VERSION_FILE")
+        FILE_VERSION=$(read_version "$VERSION_FILE")
         if [ "$FILE_VERSION" != "$VERSION" ]; then
           echo "::error::$VERSION_FILE contains '$FILE_VERSION' at this commit, but version '$VERSION' was requested"
           exit 1
@@ -159,7 +182,7 @@ runs:
           if [ -z "$HIGH_MAJOR" ] || [ "$(semver_cmp "$VERSION" "$HIGH_MAJOR")" = "1" ]; then IS_MAJOR_NEWEST=true; fi
         fi
 
-        ARGS=(--target "$SHA" --title "$TAG" --generate-notes)
+        ARGS=(--target "$SHA" --title "${RELEASE_TITLE:-$TAG}" --generate-notes)
         if [ -n "$NOTES" ]; then ARGS+=(--notes "$NOTES"); fi
         if [ "$PRERELEASE" = "true" ]; then
           ARGS+=(--prerelease --latest=false)

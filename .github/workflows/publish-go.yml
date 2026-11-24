@@ -170,7 +170,7 @@ jobs:
       - name: Create GitHub Release
         id: release
         if: ${{ !inputs.dry_run && inputs.github_release }}
-        uses: KMM-ZONE/open-flows/actions/github-release@v1.1.0
+        uses: KMM-ZONE/open-flows/actions/github-release@v1.2.0
         with:
           tag: ${{ steps.meta.outputs.tag }}
           version: ${{ steps.meta.outputs.version }}
@@ -178,13 +178,13 @@ jobs:
       - name: Set result
         id: result
         if: ${{ always() }}
-        uses: KMM-ZONE/open-flows/actions/set-published@v1.1.0
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.2.0
         with:
           outcomes: ${{ steps.warm.outcome }} ${{ steps.release.outcome }}
 
       - name: New version notice
         if: ${{ always() }}
         continue-on-error: true
-        uses: KMM-ZONE/open-flows/actions/new-version-notice@v1.1.0
+        uses: KMM-ZONE/open-flows/actions/new-version-notice@v1.2.0
         with:
           level: ${{ inputs.inform_new_version }}

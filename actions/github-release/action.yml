@@ -8,6 +8,10 @@ inputs:
   tag:
     description: "Tag of the release"
     required: true
+  title:
+    description: "Release title (empty = the tag)"
+    required: false
+    default: ""
   version:
     description: "Version, used to mark pre-releases (a '-' in the version = pre-release). Empty = derive from the tag"
     required: false
@@ -59,6 +63,7 @@ runs:
         OPTIONAL_ASSETS: ${{ inputs.optional-assets }}
         GENERATE_NOTES: ${{ inputs.generate-notes }}
         NOTES: ${{ inputs.notes }}
+        RELEASE_TITLE: ${{ inputs.title }}
         REQUIRE_TAG: ${{ inputs.require-existing-tag }}
       run: |
         if ! command -v gh > /dev/null 2>&1; then
@@ -96,7 +101,7 @@ runs:
           upload
           CREATED=false
         else
-          ARGS=(--title "$TAG")
+          ARGS=(--title "${RELEASE_TITLE:-$TAG}")
           if [ "$GENERATE_NOTES" = "true" ]; then ARGS+=(--generate-notes); fi
           if [ -n "$NOTES" ]; then ARGS+=(--notes "$NOTES"); fi
           if [ "$REQUIRE_TAG" = "true" ]; then ARGS+=(--verify-tag); fi

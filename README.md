@@ -1,7 +1,13 @@
-# Open Flows
+<h1 align="center">
+  <img src="assets/open-flow.svg" alt="Open Flows logo" width="120" height="120">
+  <br>
+  Open Flows
+</h1>
 
-[![Release](https://img.shields.io/github/v/release/KMM-ZONE/open-flows?label=release)](https://github.com/KMM-ZONE/open-flows/releases)
-[![Lint](https://github.com/KMM-ZONE/open-flows/actions/workflows/lint.yml/badge.svg)](https://github.com/KMM-ZONE/open-flows/actions/workflows/lint.yml)
+<p align="center">
+  <a href="https://github.com/KMM-ZONE/open-flows/releases"><img src="https://img.shields.io/github/v/release/KMM-ZONE/open-flows?label=release" alt="Release"></a>
+  <a href="https://github.com/KMM-ZONE/open-flows/actions/workflows/lint.yml"><img src="https://github.com/KMM-ZONE/open-flows/actions/workflows/lint.yml/badge.svg" alt="Lint"></a>
+</p>
 
 **Open Flows** is the public collection of reusable GitHub Actions workflows and composite actions maintained by **[KMM-ZONE](https://kmm.zone)** (kmm.zone).
 Anyone can call them from any repository – public or private – with a few lines of YAML, instead of copying a 100-line pipeline into every project.

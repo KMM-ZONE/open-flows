@@ -21,7 +21,7 @@ jobs:
     uses: KMM-ZONE/open-flows/.github/workflows/publish-python.yml@v1
     with:
       python_version: "3.12"
-      run_tests: false            # the old pipeline had no test step
+      run_tests: false # the old pipeline had no test step
     secrets:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
 ```
@@ -52,17 +52,18 @@ jobs:
     with:
       runner: macos-15
       check_format: true
+      analyze_paths: lib test # the old pipeline analyzed only these folders
 ```
 
 What is equivalent and what changed:
 
-| Old behaviour | In the central workflow |
-| --- | --- |
-| Tag must equal `v` + pubspec version | Same (`verify_tag`, `tag_prefix`) |
-| `dart format`, `flutter analyze`, `flutter test`, `pub publish --dry-run`, `pub publish --force` | Same order. `check_format` is **off by default** (set it to `true` to keep the old behaviour). Analysis runs on the whole package rather than `lib test` |
-| Skip when the version is **not newer than the latest git tag** | Replaced by *skip when this exact version is already on pub.dev* (`skip_if_published`). A lower, unpublished version would now be published |
-| Actions pinned to SHAs | Same, maintained centrally |
-| Concurrency group | Stays in the caller, as shown |
+| Old behaviour                                                                                    | In the central workflow                                                                                                                                                                                  |
+| ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tag must equal `v` + pubspec version                                                             | Same (`verify_tag`, `tag_prefix`)                                                                                                                                                                        |
+| `dart format`, `flutter analyze`, `flutter test`, `pub publish --dry-run`, `pub publish --force` | Same order. `check_format` is **off by default** (set it to `true` to keep the old behaviour). Set `analyze_paths: lib test` to analyze only those folders, as before (the default is the whole package) |
+| Skip when the version is **not newer than the latest git tag**                                   | Replaced by _skip when this exact version is already on pub.dev_ (`skip_if_published`). A lower, unpublished version would now be published                                                              |
+| Actions pinned to SHAs                                                                           | Same, maintained centrally                                                                                                                                                                               |
+| Concurrency group                                                                                | Stays in the caller, as shown                                                                                                                                                                            |
 
 ## npm
 

@@ -28,13 +28,21 @@ on:
         type: string
         default: "ubuntu-latest"
       check_format:
-        description: "Fail if `dart format` would change lib/ or test/"
+        description: "Fail if `dart format` would change the folders listed in format_paths"
         type: boolean
         default: false
+      format_paths:
+        description: "Space-separated folders checked by `dart format` (folders that do not exist are skipped)"
+        type: string
+        default: "lib test"
       run_analyze:
         description: "Run static analysis"
         type: boolean
         default: true
+      analyze_paths:
+        description: "Space-separated paths for the analyzer, e.g. `lib test` (empty = the whole package; missing paths are skipped)"
+        type: string
+        default: ""
       run_tests:
         description: "Run tests (skipped automatically when there is no test/ directory)"
         type: boolean
@@ -116,7 +124,7 @@ jobs:
           echo "📦 $NAME $VERSION"
 
       - name: Verify tag matches pubspec version
-        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.1.0
+        uses: KMM-ZONE/open-flows/actions/verify-tag@v1.2.0
         with:
           version: ${{ steps.meta.outputs.version }}
           tag-prefix: ${{ inputs.tag_prefix }}
@@ -125,7 +133,7 @@ jobs:
       - name: Check whether this version is already on pub.dev
         id: exists
         if: ${{ inputs.skip_if_published }}
-        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.1.0
+        uses: KMM-ZONE/open-flows/actions/registry-version-exists@v1.2.0
         with:
           registry: pub
           name: ${{ steps.meta.outputs.name }}
@@ -140,19 +148,32 @@ jobs:
 
       - name: Check formatting
         if: ${{ inputs.check_format && steps.exists.outputs.exists != 'true' }}
+        env:
+          FORMAT_PATHS: ${{ inputs.format_paths }}
         run: |
+          read -ra CANDIDATES <<< "$FORMAT_PATHS"
           DIRS=()
-          for D in lib test; do
-            if [ -d "$D" ]; then DIRS+=("$D"); fi
+          for D in "${CANDIDATES[@]}"; do
+            if [ -e "$D" ]; then DIRS+=("$D"); fi
           done
+          if [ "${#DIRS[@]}" -eq 0 ]; then
+            echo "::notice::None of the format paths exist - skipping the format check"
+            exit 0
+          fi
           dart format --output=none --set-exit-if-changed "${DIRS[@]}"
 
       - name: Analyze
         if: ${{ inputs.run_analyze && steps.exists.outputs.exists != 'true' }}
         env:
           DART_ONLY: ${{ inputs.dart_only }}
+          ANALYZE_PATHS: ${{ inputs.analyze_paths }}
         run: |
-          if [ "$DART_ONLY" = "true" ]; then dart analyze; else flutter analyze; fi
+          read -ra CANDIDATES <<< "$ANALYZE_PATHS"
+          TARGETS=()
+          for P in "${CANDIDATES[@]}"; do
+            if [ -e "$P" ]; then TARGETS+=("$P"); fi
+          done
+          if [ "$DART_ONLY" = "true" ]; then dart analyze "${TARGETS[@]}"; else flutter analyze "${TARGETS[@]}"; fi
 
       - name: Test
         if: ${{ inputs.run_tests && steps.exists.outputs.exists != 'true' }}
@@ -183,13 +204,13 @@ jobs:
       - name: Set result
         id: result
         if: ${{ always() }}
-        uses: KMM-ZONE/open-flows/actions/set-published@v1.1.0
+        uses: KMM-ZONE/open-flows/actions/set-published@v1.2.0
         with:
           outcomes: ${{ steps.publish.outcome }}
 
       - name: New version notice
         if: ${{ always() }}
         continue-on-error: true
-        uses: KMM-ZONE/open-flows/actions/new-version-notice@v1.1.0
+        uses: KMM-ZONE/open-flows/actions/new-version-notice@v1.2.0
         with:
           level: ${{ inputs.inform_new_version }}

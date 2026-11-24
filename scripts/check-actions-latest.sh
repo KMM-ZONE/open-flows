@@ -4,7 +4,7 @@
 #   other actions  -> must be pinned to the SHA of the latest release
 # Set STRICT=1 to exit non-zero when something is outdated.  Needs only git + network.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 STRICT="${STRICT:-0}"
 
 latest_release() { # owner/repo -> "tag sha" (highest stable semver tag, dereferenced commit)
